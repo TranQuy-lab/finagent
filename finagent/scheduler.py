@@ -19,7 +19,7 @@ from finagent import storage
 from finagent.celery_app import cluster_status, dispatch
 from finagent.collectors import news as news_collector
 from finagent.config import settings
-from finagent.decision import engine
+from finagent.decision import engine, token_meter
 from finagent.telegram_bot import TelegramNotifier
 from finagent.tasks import crawl_crypto, crawl_gold, crawl_news, crawl_vn_stock
 
@@ -222,6 +222,10 @@ def scan_market(run_llm: bool = True, notify: bool = True) -> int:
     sent = 0
     started = time.monotonic()
 
+    # Ngoài giờ giao dịch thì chứng khoán Việt Nam không có gì mới để phân tích.
+    # Bỏ trước khi lọc bằng ML để khỏi chạy cả bước lọc cho mã chắc chắn bị loại.
+    symbols = filter_by_market_hours(symbols)
+
     # Lọc trước bằng ML rẻ tiền để khỏi tốn 13 phút LLM cho mã đang ở vùng trung tính.
     if run_llm and settings.llm_prefilter:
         symbols = _prefilter_symbols(symbols)
@@ -339,6 +343,10 @@ def run_scheduler() -> None:
     # tức trong kho trước thì quét mới có ý nghĩa.
     now = datetime.now()
 
+    # Bật bộ đếm token cho cả tiến trình. Nhờ vậy log mỗi lượt quét đều có số token
+    # thật, không phải ước lượng.
+    token_meter.install_global_callback()
+
     # Thu thập tin tức thường xuyên hơn vì tin tức thay đổi liên tục.
     scheduler.add_job(
         collect_once, "interval", seconds=settings.news_interval,
@@ -364,3 +372,64 @@ def run_scheduler() -> None:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
         logger.info("Đã dừng bộ giám sát.")
+
+
+# ---------------------------------------------------------------------------
+# Giờ giao dịch
+# ---------------------------------------------------------------------------
+
+def _vietnam_now():
+    """Thời điểm hiện tại theo giờ Việt Nam (UTC+7)."""
+    from datetime import datetime, timedelta, timezone
+
+    return datetime.now(timezone(timedelta(hours=7)))
+
+
+def in_market_hours(now=None) -> bool:
+    """Sàn chứng khoán Việt Nam có đang mở cửa không.
+
+    Mở 9:00–15:00 các ngày trong tuần. Nghỉ trưa 11:30–13:00 vẫn tính là trong giờ
+    vì dữ liệu phiên sáng còn dùng được, và phiên chiều bắt đầu ngay sau đó.
+
+    Không xét ngày lễ — lịch nghỉ lễ thay đổi theo năm và không có nguồn miễn phí
+    đáng tin. Ngày lễ chỉ khiến hệ thống phân tích thừa một lượt, không gây hại.
+    """
+    from datetime import time as clock
+
+    current = now or _vietnam_now()
+    if current.weekday() >= 5:      # thứ Bảy, Chủ nhật
+        return False
+
+    try:
+        open_h, open_m = (int(part) for part in settings.market_open.split(":"))
+        close_h, close_m = (int(part) for part in settings.market_close.split(":"))
+    except ValueError:
+        logger.warning(
+            "FINAGENT_MARKET_OPEN/CLOSE sai định dạng (%r, %r) — coi như luôn trong giờ.",
+            settings.market_open, settings.market_close,
+        )
+        return True
+
+    return clock(open_h, open_m) <= current.time() <= clock(close_h, close_m)
+
+
+def filter_by_market_hours(symbols: list[str]) -> list[str]:
+    """Bỏ chứng khoán Việt Nam ra khỏi danh sách khi sàn đã đóng cửa.
+
+    Crypto và vàng giữ nguyên: crypto chạy 24/7, còn vàng trong nước niêm yết giá
+    tham khảo cả ngày.
+    """
+    if not settings.market_hours_only or in_market_hours():
+        return symbols
+
+    from finagent.decision import vendor
+
+    kept = [s for s in symbols if vendor.detect_asset_class(s) != "vn_stock"]
+    dropped = len(symbols) - len(kept)
+
+    if dropped:
+        logger.info(
+            "Ngoài giờ giao dịch (%s–%s): bỏ %d mã chứng khoán, còn %d mã.",
+            settings.market_open, settings.market_close, dropped, len(kept),
+        )
+    return kept

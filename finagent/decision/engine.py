@@ -230,7 +230,11 @@ def analyze_llm(symbol: str, trade_date: str | None = None, backend_url: str | N
         asset_type = "crypto" if asset_class == "crypto" else "stock"
         config = build_graph_config(asset_class, backend_url=backend_url)
 
-        graph = TradingAgentsGraph(debug=False, config=config)
+        # Cắm bộ đếm token nếu đang bật đo. Khung có sẵn tham số callbacks và
+        # truyền thẳng vào LLM, nên không phải vá gì.
+        from finagent.decision.token_meter import build_callbacks
+
+        graph = TradingAgentsGraph(debug=False, config=config, callbacks=build_callbacks() or None)
         date = trade_date or utcnow_iso()[:10]
 
         # Truyền danh mục thật để tác nhân tư vấn theo đúng sổ hiện có, thay vì

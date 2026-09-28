@@ -235,6 +235,18 @@ class Settings:
     #: Khớp với ngưỡng trong ``combine_signals``.
     ml_neutral_band: float = field(default_factory=lambda: _env_float("FINAGENT_ML_NEUTRAL_BAND", 0.05))
 
+    # --- Giờ giao dịch -----------------------------------------------------
+    #: Chỉ phân tích chứng khoán Việt Nam trong giờ giao dịch.
+    #:
+    #: Sàn Việt Nam chỉ mở 9:00–15:00 các ngày trong tuần. Phân tích chứng khoán lúc
+    #: 3 giờ sáng tốn khoảng 217.000 token cho mỗi mã mà giá và thanh khoản đều là
+    #: số cũ — kết luận không dùng được vào việc gì. Crypto không bị giới hạn này vì
+    #: thị trường crypto chạy 24/7.
+    market_hours_only: bool = field(default_factory=lambda: _env_bool("FINAGENT_MARKET_HOURS_ONLY", True))
+    #: Giờ mở cửa và đóng cửa theo giờ Việt Nam, dạng "HH:MM".
+    market_open: str = field(default_factory=lambda: _env_str("FINAGENT_MARKET_OPEN", "09:00"))
+    market_close: str = field(default_factory=lambda: _env_str("FINAGENT_MARKET_CLOSE", "15:00"))
+
     # --- Độ sâu suy luận ---------------------------------------------------
     #: Số vòng tranh luận giữa bò và gấu. Nhiều vòng hơn = soi kỹ hơn, nhưng tốn
     #: thời gian và hạn mức API gấp bội.
