@@ -247,6 +247,20 @@ class Settings:
     market_open: str = field(default_factory=lambda: _env_str("FINAGENT_MARKET_OPEN", "09:00"))
     market_close: str = field(default_factory=lambda: _env_str("FINAGENT_MARKET_CLOSE", "15:00"))
 
+    #: Các mốc giờ quét trong ngày, cách nhau dấu phẩy, dạng "HH:MM" giờ Việt Nam.
+    #:
+    #: Quét theo mốc giờ thay vì theo chu kỳ là điều khác biệt lớn về chi phí. Một
+    #: lượt quét 4 mã tốn khoảng 867.000 token; quét mỗi 30 phút suốt ngày là hơn
+    #: **1,2 tỷ token mỗi tháng** — vừa tốn kém vừa vô nghĩa, vì ngoài giờ giao dịch
+    #: giá và thanh khoản đều không đổi.
+    #:
+    #: Hai mốc là đủ và hợp lý với nhịp thị trường Việt Nam:
+    #:   09:45 — sau khi phiên sáng đã ổn định, biến động mở cửa đã qua
+    #:   14:00 — trước khi đóng cửa, kịp hành động trong ngày
+    #:
+    #: Đặt rỗng để quay lại quét theo chu kỳ ``monitor_interval``.
+    scan_times: list[str] = field(default_factory=lambda: _env_list("FINAGENT_SCAN_TIMES", ["09:45", "14:00"]))
+
     # --- Độ sâu suy luận ---------------------------------------------------
     #: Số vòng tranh luận giữa bò và gấu. Nhiều vòng hơn = soi kỹ hơn, nhưng tốn
     #: thời gian và hạn mức API gấp bội.

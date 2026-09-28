@@ -179,3 +179,71 @@ class TestMarketHours:
         monkeypatch.setattr(scheduler, "in_market_hours", lambda now=None: False)
 
         assert scheduler.filter_by_market_hours(["BTCUSDT", "ETHUSDT"]) == ["BTCUSDT", "ETHUSDT"]
+
+
+class TestScanTimes:
+    """Quét theo mốc giờ thay vì theo chu kỳ.
+
+    Đây là khác biệt lớn về chi phí: một lượt quét 4 mã tốn khoảng 867.000 token,
+    quét mỗi 30 phút suốt ngày là hơn 1,2 tỷ token mỗi tháng.
+    """
+
+    def test_doc_moc_gio_binh_thuong(self, monkeypatch):
+        from finagent import scheduler
+        from finagent.config import settings
+
+        monkeypatch.setattr(settings, "scan_times", ["09:45", "14:00"], raising=False)
+
+        assert scheduler._scan_times() == [(9, 45), (14, 0)]
+
+    def test_sap_xep_va_bo_trung(self, monkeypatch):
+        from finagent import scheduler
+        from finagent.config import settings
+
+        monkeypatch.setattr(settings, "scan_times", ["14:00", "09:45", "09:45"], raising=False)
+
+        assert scheduler._scan_times() == [(9, 45), (14, 0)]
+
+    def test_bo_qua_moc_sai_dinh_dang(self, monkeypatch):
+        """Một dấu phẩy thừa trong .env không đáng làm sập bộ lập lịch."""
+        from finagent import scheduler
+        from finagent.config import settings
+
+        monkeypatch.setattr(settings, "scan_times", ["09:45", "abc", "", "14:00"], raising=False)
+
+        assert scheduler._scan_times() == [(9, 45), (14, 0)]
+
+    def test_bo_qua_gio_ngoai_khoang(self, monkeypatch):
+        from finagent import scheduler
+        from finagent.config import settings
+
+        monkeypatch.setattr(settings, "scan_times", ["25:00", "10:99", "12:30"], raising=False)
+
+        assert scheduler._scan_times() == [(12, 30)]
+
+    def test_danh_sach_rong_thi_quay_ve_chu_ky(self, monkeypatch):
+        from finagent import scheduler
+        from finagent.config import settings
+
+        monkeypatch.setattr(settings, "scan_times", [], raising=False)
+
+        assert scheduler._scan_times() == []
+
+    def test_mac_dinh_hai_moc_moi_ngay(self):
+        """Mặc định phải là hai mốc — nhiều hơn là tốn token vô ích."""
+        import importlib
+
+        from finagent import config as config_module
+
+        importlib.reload(config_module)
+        assert len(config_module.settings.scan_times) == 2
+
+    def test_hai_moc_nam_trong_gio_giao_dich(self):
+        """Quét ngoài giờ giao dịch là phân tích số liệu đã cũ."""
+        from finagent.config import settings
+
+        open_h = int(settings.market_open.split(":")[0])
+        close_h = int(settings.market_close.split(":")[0])
+        for text in settings.scan_times:
+            hour = int(str(text).split(":")[0])
+            assert open_h <= hour <= close_h, f"mốc {text} nằm ngoài giờ giao dịch"

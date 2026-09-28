@@ -325,6 +325,30 @@ def run_cycle(run_llm: bool = True) -> dict:
     return stats
 
 
+def _scan_times() -> list[tuple[int, int]]:
+    """Các mốc giờ quét trong ngày, dạng ``[(giờ, phút), ...]``.
+
+    Bỏ qua mốc sai định dạng kèm cảnh báo, thay vì làm sập bộ lập lịch. Một dấu phẩy
+    thừa trong ``.env`` không đáng để cả hệ thống ngừng chạy.
+    """
+    times: list[tuple[int, int]] = []
+    for raw in settings.scan_times:
+        text = str(raw).strip()
+        if not text:
+            continue
+        try:
+            hour_text, minute_text = text.split(":", 1)
+            hour, minute = int(hour_text), int(minute_text)
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError("ngoài khoảng hợp lệ")
+        except ValueError:
+            logger.warning("Bỏ qua mốc giờ quét không hợp lệ: %r", text)
+            continue
+        times.append((hour, minute))
+
+    return sorted(set(times))
+
+
 def run_scheduler() -> None:
     """Chạy bộ giám sát định kỳ cho tới khi bị dừng."""
     from datetime import datetime, timedelta
@@ -353,20 +377,45 @@ def run_scheduler() -> None:
         id="collect", name="Thu thập dữ liệu từ máy con", max_instances=1, coalesce=True,
         next_run_time=now + timedelta(seconds=10),
     )
-    # Quét thị trường và ra quyết định theo nhịp chậm hơn (tốn token LLM).
-    scheduler.add_job(
-        lambda: scan_market(run_llm=True), "interval", seconds=settings.monitor_interval,
-        id="scan", name="Quét thị trường và ra quyết định", max_instances=1, coalesce=True,
-        next_run_time=now + timedelta(seconds=120),
-    )
+    # Quét thị trường và ra quyết định — đặt theo MỐC GIỜ, không theo chu kỳ.
+    #
+    # Quét theo chu kỳ 30 phút tốn hơn 1,2 tỷ token mỗi tháng mà phần lớn là vô
+    # nghĩa: ngoài giờ giao dịch thì giá và thanh khoản không đổi, phân tích lại chỉ
+    # ra đúng kết luận cũ. Hai mốc mỗi ngày là đủ cho nhịp thị trường Việt Nam.
+    scheduled = _scan_times()
+    if scheduled:
+        for hour, minute in scheduled:
+            scheduler.add_job(
+                lambda: scan_market(run_llm=True), "cron",
+                day_of_week="mon-fri", hour=hour, minute=minute,
+                id=f"scan-{hour:02d}{minute:02d}",
+                name=f"Quét thị trường lúc {hour:02d}:{minute:02d}",
+                max_instances=1, coalesce=True,
+                # Nếu máy chủ bận hoặc vừa khởi động lại quanh mốc giờ đó thì vẫn
+                # chạy bù trong vòng 30 phút, thay vì bỏ luôn cả mốc.
+                misfire_grace_time=1800,
+            )
+        logger.info(
+            "Quét thị trường theo mốc giờ: %s (thứ Hai–thứ Sáu).",
+            ", ".join(f"{h:02d}:{m:02d}" for h, m in scheduled),
+        )
+    else:
+        # Không cấu hình mốc giờ thì quay lại quét theo chu kỳ.
+        scheduler.add_job(
+            lambda: scan_market(run_llm=True), "interval", seconds=settings.monitor_interval,
+            id="scan", name="Quét thị trường và ra quyết định", max_instances=1, coalesce=True,
+            next_run_time=now + timedelta(seconds=120),
+        )
     scheduler.add_job(
         expire_stale_proposals, "interval", seconds=300,
         id="expire", name="Hết hạn đề xuất cũ", max_instances=1, coalesce=True,
     )
 
     logger.info(
-        "Bộ giám sát đã chạy: thu thập mỗi %ds, quét thị trường mỗi %ds.",
-        settings.news_interval, settings.monitor_interval,
+        "Bộ giám sát đã chạy: thu thập mỗi %ds, quét %s.",
+        settings.news_interval,
+        (", ".join(f"{h:02d}:{m:02d}" for h, m in scheduled) if scheduled
+         else f"mỗi {settings.monitor_interval}s"),
     )
     try:
         scheduler.start()
