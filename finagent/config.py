@@ -42,6 +42,18 @@ def _env_float(key: str, default: float) -> float:
         raise ValueError(f"{key} phải là số thực, nhận được {raw!r}") from exc
 
 
+def _env_bool(key: str, default: bool) -> bool:
+    raw = os.getenv(key)
+    if raw in (None, ""):
+        return default
+    normalized = raw.strip().lower()
+    if normalized in ("true", "1", "yes", "on"):
+        return True
+    if normalized in ("false", "0", "no", "off"):
+        return False
+    raise ValueError(f"{key} phải là true/false, nhận được {raw!r}")
+
+
 def _env_list(key: str, default: list[str]) -> list[str]:
     raw = os.getenv(key)
     if raw in (None, ""):
@@ -173,6 +185,20 @@ class Settings:
     max_position_pct: float = field(default_factory=lambda: _env_float("FINAGENT_MAX_POSITION_PCT", 0.10))
     #: Lệnh vượt ngưỡng này (VND) bắt buộc người dùng duyệt qua Telegram.
     require_approval_above: float = field(default_factory=lambda: _env_float("FINAGENT_APPROVAL_THRESHOLD", 5_000_000.0))
+
+    # --- Sàn giao dịch thật (Binance) --------------------------------------
+    binance_api_key: str = field(default_factory=lambda: _env_str("BINANCE_API_KEY", ""))
+    binance_api_secret: str = field(default_factory=lambda: _env_str("BINANCE_API_SECRET", ""))
+    #: Mặc định dùng Testnet — tiền giả, an toàn để thử.
+    binance_testnet: bool = field(default_factory=lambda: _env_bool("BINANCE_TESTNET", True))
+    #: Cửa chặn an toàn: muốn giao dịch tiền thật phải đặt chính xác ``YES``.
+    #: Cố ý khó, để không ai vô tình bật tiền thật chỉ vì sửa nhầm một dòng.
+    binance_live_confirm: str = field(default_factory=lambda: _env_str("BINANCE_LIVE_CONFIRM", ""))
+    #: Phí sàn Binance spot (0,1% mặc định; 0,075% nếu trả bằng BNB).
+    binance_fee_rate: float = field(default_factory=lambda: _env_float("BINANCE_FEE_RATE", 0.001))
+    #: Ghi đè địa chỉ API. Để trống thì tự chọn theo ``binance_testnet``.
+    #: Hữu ích khi dùng Binance US, một proxy, hoặc sàn giả lập trong test.
+    binance_base_url: str = field(default_factory=lambda: _env_str("BINANCE_BASE_URL", ""))
 
     # --- Thu thập dữ liệu --------------------------------------------------
     crypto_symbols: list[str] = field(default_factory=lambda: _env_list("FINAGENT_CRYPTO_SYMBOLS", DEFAULT_CRYPTO_SYMBOLS))

@@ -288,9 +288,9 @@ def run_bot() -> None:
     async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not _authorized(update):
             return
-        from finagent.broker.paper import PaperBroker
+        from finagent.broker import get_broker
 
-        await update.message.reply_text(format_positions(PaperBroker()), parse_mode="Markdown")
+        await update.message.reply_text(format_positions(get_broker()), parse_mode="Markdown")
 
     async def cmd_pending(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not _authorized(update):

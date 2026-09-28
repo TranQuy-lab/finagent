@@ -265,7 +265,8 @@ def size_order(action: str, price: float, cash: float, portfolio_value: float,
 
 def build_proposal(symbol: str, run_llm: bool = True) -> Proposal | None:
     """Phân tích một mã và tạo đề xuất giao dịch tương ứng."""
-    from finagent.broker.paper import PaperBroker, currency_for
+    from finagent.broker import get_broker
+    from finagent.broker.base import currency_for
 
     latest = get_conn().execute(
         "SELECT * FROM prices WHERE symbol = ? ORDER BY captured_at DESC, id DESC LIMIT 1",
@@ -279,7 +280,7 @@ def build_proposal(symbol: str, run_llm: bool = True) -> Proposal | None:
     price = float(latest["price"])
     asset_class = latest["asset_class"]
 
-    broker = PaperBroker()
+    broker = get_broker()
     position = broker.get_position(symbol)
     holding = float(position["quantity"]) if position else 0.0
 
@@ -395,26 +396,61 @@ def resolve_proposal(proposal_id: int, approved: bool, decided_by: str = "telegr
         return result
 
 
-def execute_approved(proposal: dict) -> dict:
-    """Đặt lệnh cho một đề xuất đã được người dùng duyệt."""
-    from finagent.broker.paper import PaperBroker
+def _linkable_proposal_id(conn, proposal: dict) -> int | None:
+    """Mã đề xuất để gắn vào sổ lệnh, hoặc ``None`` nếu đề xuất không còn tồn tại.
 
-    broker = PaperBroker()
+    Bảng ``orders`` có khoá ngoại trỏ tới ``proposals``. Lệnh vẫn có thể được đặt
+    khi đề xuất đã bị xoá (ví dụ người dùng dọn dữ liệu cũ) — khi đó ghi ``None``
+    thay vì để SQLite báo ``FOREIGN KEY constraint failed`` và làm hỏng cả giao
+    dịch đã thực hiện thành công trên sàn.
+    """
+    proposal_id = proposal.get("id")
+    if not proposal_id:
+        return None
+
+    row = conn.execute("SELECT id FROM proposals WHERE id = ?", (proposal_id,)).fetchone()
+    if row is None:
+        logger.warning(
+            "Đề xuất #%s không còn trong sổ — lệnh vẫn được ghi nhưng không gắn đề xuất.",
+            proposal_id,
+        )
+        return None
+    return int(proposal_id)
+
+
+def execute_approved(proposal: dict) -> dict:
+    """Đặt lệnh cho một đề xuất đã được người dùng duyệt.
+
+    Lệnh được gửi tới broker **trước**, rồi mới ghi sổ. Thứ tự này là chủ đích:
+    nếu ghi sổ trước mà sàn từ chối thì sổ sai; còn nếu sàn khớp mà ghi sổ lỗi thì
+    ít nhất tiền đã ra/vào đúng như người dùng duyệt, và lỗi được ghi log rõ ràng.
+    """
+    from finagent.broker import get_broker
+
+    broker = get_broker()
     if proposal["action"] == "buy":
         order = broker.buy(proposal["symbol"], proposal["quantity"], proposal["price"], proposal["asset_class"])
     else:
         order = broker.sell(proposal["symbol"], proposal["quantity"], proposal["price"], proposal["asset_class"])
 
-    with transaction() as conn:
-        conn.execute(
-            """INSERT INTO orders
-               (proposal_id, symbol, side, quantity, price, status, mode, broker_ref, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                proposal.get("id"), order.symbol, order.side, order.quantity, order.price,
-                order.status, order.mode, order.broker_ref, utcnow_iso(),
-            ),
+    try:
+        with transaction() as conn:
+            conn.execute(
+                """INSERT INTO orders
+                   (proposal_id, symbol, side, quantity, price, status, mode, broker_ref, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    _linkable_proposal_id(conn, proposal),
+                    order.symbol, order.side, order.quantity, order.price,
+                    order.status, order.mode, order.broker_ref, utcnow_iso(),
+                ),
+            )
+    except Exception:  # noqa: BLE001 - lệnh đã gửi rồi, không được nuốt lỗi ghi sổ
+        logger.exception(
+            "Lệnh %s %s đã gửi tới sàn nhưng ghi sổ thất bại (broker_ref=%s)",
+            order.side, order.symbol, order.broker_ref,
         )
+        raise
     return {
         "ok": order.ok,
         "status": order.status,

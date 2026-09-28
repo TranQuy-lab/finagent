@@ -14,7 +14,7 @@ import logging
 import math
 import uuid
 
-from finagent.broker.base import OrderResult
+from finagent.broker.base import ASSET_CURRENCY, OrderResult, currency_for
 from finagent.collectors.base import utcnow_iso
 from finagent.config import settings
 from finagent.storage import add_cash, all_cash, get_cash, get_conn, transaction
@@ -23,19 +23,6 @@ logger = logging.getLogger(__name__)
 
 #: Phí giao dịch mô phỏng (0,15% mỗi chiều — mức phổ biến ở công ty chứng khoán VN).
 FEE_RATE = 0.0015
-
-#: Loại tiền tệ dùng để định giá từng nhóm tài sản.
-ASSET_CURRENCY = {
-    "crypto": "USDT",
-    "vn_stock": "VND",
-    "gold": "VND",
-}
-
-
-def currency_for(asset_class: str) -> str:
-    """Trả về loại tiền tệ dùng để giao dịch một nhóm tài sản."""
-    return ASSET_CURRENCY.get(asset_class, "VND")
-
 
 def _round_quantity(quantity: float, asset_class: str) -> float:
     """Làm tròn khối lượng theo lô giao dịch.

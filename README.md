@@ -272,6 +272,7 @@ Hai điều kiện tiên quyết hay gặp nhất, cả hai đều đã gặp th
 | `finagent bot` | Bot Telegram |
 | `finagent worker` | Chạy máy con |
 | `finagent ping` | Kiểm tra kết nối tới máy con |
+| `finagent broker-check` | Kiểm tra nền tảng giao dịch và tài khoản sàn |
 
 Qua Telegram: `/status`, `/positions`, `/pending`, `/scan`, `/help`.
 
@@ -382,6 +383,43 @@ Cả hai đều dùng được ngoài môi trường test: `mock_llm.py` chạy 
 - **Máy ảo trên VMware cần một lệnh `sudo` của bạn** để build lại module `vmmon`/`vmnet`
   (xem `deploy/README.md` mục 0.1). Phần cấu hình máy chủ đã được kiểm chứng độc lập
   bằng QEMU/KVM với đúng cloud image và đĩa seed đó.
+
+### 10.1. Nền tảng giao dịch
+
+| Tài sản | Nền tảng | Trạng thái |
+|---|---|---|
+| Crypto (BTC/ETH) | **Binance Spot** | ✅ Đã có adapter — `finagent/broker/binance.py` |
+| Chứng khoán VN | SSI / TCBS / VPS | ❌ Chưa có, cần đăng ký API |
+| Vàng (SJC/DOJI) | — | ❌ Không có API đặt lệnh |
+
+Chọn Binance vì API công khai, tài liệu rõ, và có **Testnet** — API giống hệt bản
+thật nhưng dùng tiền giả, nên kiểm chứng được trọn luồng mà không mất tiền.
+
+**Đổi sang giao dịch thật:**
+
+```bash
+# 1) Lấy khoá Testnet miễn phí: https://testnet.binance.vision (đăng nhập GitHub)
+# 2) Điền vào .env
+FINAGENT_TRADING_MODE=live
+BINANCE_API_KEY=...
+BINANCE_API_SECRET=...
+BINANCE_TESTNET=true          # tiền giả
+
+# 3) Kiểm tra kết nối trước khi chạy
+finagent broker-check
+```
+
+**Hai điều khác biệt so với mô phỏng:**
+
+1. **Kích thước lệnh do sàn quy định.** Binance chỉ nhận bội số `stepSize` và từ
+   chối lệnh dưới `minNotional`. Hệ thống hỏi sàn trước khi đặt chứ không đoán —
+   BTC bước `0.00001` nhưng ETH bước `0.0001`, đoán là sai.
+2. **Sàn không biết giá vốn.** Binance chỉ cho biết đang giữ bao nhiêu. Nên số
+   lượng lấy từ sàn (nguồn sự thật), giá vốn bình quân giữ trong SQLite cục bộ.
+
+**Cửa chặn tiền thật:** muốn dùng tiền thật phải đặt **cả hai** `BINANCE_TESTNET=false`
+**và** `BINANCE_LIVE_CONFIRM=YES`. Hai điều kiện, để không ai vô tình giao dịch tiền
+thật chỉ vì sửa nhầm một dòng.
 
 **Hướng phát triển:**
 

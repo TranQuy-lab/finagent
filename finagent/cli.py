@@ -2,7 +2,8 @@
 
 Dùng cho cả máy chủ và máy con:
 
-* Máy chủ: ``init``, ``status``, ``collect``, ``scan``, ``run``, ``bot``, ``positions``
+* Máy chủ: ``init``, ``status``, ``collect``, ``scan``, ``run``, ``bot``, ``positions``,
+  ``broker-check``
 * Máy con:  ``worker``, ``ping``
 
 Ví dụ::
@@ -97,9 +98,13 @@ def cmd_status(args) -> int:
         print(f"   Chủ đề    : {', '.join(f'{k}={v}' for k, v in sorted(topics.items()))}")
 
     print("\n💼 DANH MỤC")
-    from finagent.broker.paper import PaperBroker
+    from finagent.broker import describe_broker, get_broker
 
-    broker = PaperBroker()
+    info = describe_broker()
+    print(f"   Nền tảng  : {info['venue']}")
+    print(f"   Tiền thật : {'CÓ' if info['real_money'] else 'không'}")
+
+    broker = get_broker()
     for currency, amount in sorted(broker.all_cash().items()):
         print(f"   Ví {currency:<5}: {amount:>18,.2f}")
     positions = broker.list_positions()
@@ -159,11 +164,11 @@ def cmd_scan(args) -> int:
 
 def cmd_positions(args) -> int:
     """In danh mục mô phỏng hiện tại."""
-    from finagent.broker.paper import PaperBroker
+    from finagent.broker import get_broker
     from finagent.telegram_bot import format_positions
 
     storage.init_db()
-    print(format_positions(PaperBroker()))
+    print(format_positions(get_broker()))
     return 0
 
 
@@ -252,6 +257,61 @@ def cmd_ping(args) -> int:
 # Bộ phân tích tham số
 # ---------------------------------------------------------------------------
 
+def cmd_broker_check(args) -> int:
+    """Kiểm tra kết nối tới sàn và tình trạng tài khoản."""
+    from finagent.broker import describe_broker, get_broker
+
+    storage.init_db()
+    info = describe_broker()
+
+    print("=" * 60)
+    print("  KIỂM TRA NỀN TẢNG GIAO DỊCH")
+    print("=" * 60)
+    print(f"\n  Chế độ    : {info['mode']}")
+    print(f"  Nền tảng  : {info['venue']}")
+    print(f"  Endpoint  : {info['endpoint']}")
+    if info["real_money"]:
+        print("  ⚠️  TIỀN THẬT — mọi lệnh sẽ dùng tiền thật!")
+    else:
+        print("  ✅ Không dùng tiền thật")
+
+    try:
+        broker = get_broker()
+    except Exception as exc:  # noqa: BLE001
+        print(f"\n  ❌ Không khởi tạo được broker: {exc}")
+        return 1
+
+    if info["mode"] == "paper":
+        print(f"\n  Số dư mô phỏng:")
+        for currency, amount in sorted(broker.all_cash().items()):
+            print(f"    {currency:<6} {amount:>18,.2f}")
+        print("\n  ✅ Broker mô phỏng sẵn sàng. Không cần khoá API.")
+        return 0
+
+    if hasattr(broker, "test_connection"):
+        print("\n  Đang kết nối tới sàn…")
+        try:
+            result = broker.test_connection()
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ❌ Kết nối thất bại: {exc}")
+            return 1
+
+        print(f"    Cho phép giao dịch : {result.get('can_trade')}")
+        print(f"    Loại tài khoản     : {result.get('account_type')}")
+        balances = result.get("balances_nonzero") or {}
+        print(f"    Số dư khác 0       :")
+        for asset, amount in sorted(balances.items())[:10]:
+            print(f"      {asset:<6} {amount:>18,.8f}")
+        if not balances:
+            print("      (chưa có tài sản nào — nạp tiền testnet tại testnet.binance.vision)")
+
+        print("\n  ✅ Kết nối sàn thành công.")
+        return 0
+
+    print("\n  ⚠️  Broker này không hỗ trợ kiểm tra kết nối.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="finagent",
@@ -278,6 +338,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("run", help="Chạy bộ giám sát định kỳ (máy chủ)").set_defaults(func=cmd_run)
     sub.add_parser("bot", help="Chạy bot Telegram").set_defaults(func=cmd_bot)
+    sub.add_parser("broker-check", help="Kiểm tra kết nối tới sàn giao dịch").set_defaults(func=cmd_broker_check)
 
     p_worker = sub.add_parser("worker", help="Chạy máy con thu thập")
     p_worker.add_argument("--name", default=None, help="Tên máy con (mặc định lấy hostname)")
