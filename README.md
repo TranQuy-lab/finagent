@@ -153,9 +153,11 @@ python3 -m venv .venv
 # 2) Cấu hình
 cp .env.example .env
 nano .env
-#    • Chọn nhà cung cấp LLM và điền khoá tương ứng, ví dụ:
-#         TRADINGAGENTS_LLM_PROVIDER=google
-#         GOOGLE_API_KEY=...
+#    • Chọn nhà cung cấp LLM và điền khoá tương ứng. Đang dùng opencode zen:
+#         TRADINGAGENTS_LLM_PROVIDER=openai_compatible
+#         TRADINGAGENTS_LLM_BACKEND_URL=https://opencode.ai/zen/v1
+#         OPENAI_COMPATIBLE_API_KEY=...
+#         TRADINGAGENTS_DEEP_THINK_LLM=deepseek-v4.1-flash
 #    • Điền TELEGRAM_BOT_TOKEN (xin qua @BotFather)
 
 # 3) Redis (dùng Docker cho nhanh)
@@ -384,7 +386,31 @@ Cả hai đều dùng được ngoài môi trường test: `mock_llm.py` chạy 
   (xem `deploy/README.md` mục 0.1). Phần cấu hình máy chủ đã được kiểm chứng độc lập
   bằng QEMU/KVM với đúng cloud image và đĩa seed đó.
 
-### 10.1. Nền tảng giao dịch
+### 10.1. Nhà cung cấp LLM
+
+Hệ thống dùng endpoint **OpenAI-compatible**, nên đổi nhà cung cấp chỉ là đổi ba
+biến trong `.env`:
+
+```bash
+TRADINGAGENTS_LLM_PROVIDER=openai_compatible
+TRADINGAGENTS_LLM_BACKEND_URL=https://opencode.ai/zen/v1
+OPENAI_COMPATIBLE_API_KEY=...
+TRADINGAGENTS_DEEP_THINK_LLM=deepseek-v4.1-flash
+TRADINGAGENTS_QUICK_THINK_LLM=deepseek-v4.1-flash
+```
+
+Cấu hình này cũng dùng được cho vLLM, LM Studio, llama.cpp, hoặc gateway nội bộ.
+
+**Vì sao không dùng gói miễn phí của Google:** gói miễn phí giới hạn 20 request
+mỗi ngày cho **mỗi** model, mà một lượt phân tích đa tác nhân tốn khoảng 20 lời
+gọi — vừa đủ một lượt rồi hết. Không đủ dùng thực tế. `deepseek-v4.1-flash` qua
+opencode zen không gặp giới hạn đó.
+
+**`deepseek-v4.1-flash` là model suy luận.** Phần lớn token đầu được dùng cho
+`reasoning` trước khi sinh câu trả lời, nên đừng giới hạn `max_tokens` chặt —
+để trống (mặc định) là an toàn nhất.
+
+### 10.2. Nền tảng giao dịch
 
 | Tài sản | Nền tảng | Trạng thái |
 |---|---|---|

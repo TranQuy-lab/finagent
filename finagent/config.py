@@ -98,6 +98,8 @@ DEFAULT_GOLD_SYMBOLS = ["SJL1L10", "DOJINHTV", "PQHNVM", "BT9999NTT", "XAUUSD"]
 #: Giữ khớp với TradingAgents để không phải cấu hình khoá ở hai nơi.
 PROVIDER_KEY_ENV: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
+    # Endpoint OpenAI-compatible bất kỳ (opencode zen, vLLM, LM Studio, gateway nội bộ).
+    "openai_compatible": "OPENAI_COMPATIBLE_API_KEY",
     "google": "GOOGLE_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
@@ -185,6 +187,66 @@ class Settings:
     max_position_pct: float = field(default_factory=lambda: _env_float("FINAGENT_MAX_POSITION_PCT", 0.10))
     #: Lệnh vượt ngưỡng này (VND) bắt buộc người dùng duyệt qua Telegram.
     require_approval_above: float = field(default_factory=lambda: _env_float("FINAGENT_APPROVAL_THRESHOLD", 5_000_000.0))
+
+    # --- Trí nhớ và tự phản tỉnh (TradingAgents) --------------------------
+    #: Bật nhật ký quyết định. Mỗi lần chạy ghi lại quyết định; lần sau với cùng
+    #: mã, hệ thống lấy lợi nhuận thực tế, sinh đoạn tự rút kinh nghiệm rồi bơm
+    #: vào prompt của Portfolio Manager. Đây là cơ chế "học từ sai lầm".
+    memory_enabled: bool = field(default_factory=lambda: _env_bool("FINAGENT_MEMORY_ENABLED", True))
+    #: Chặn trên số mục trong nhật ký (None = không giới hạn).
+    memory_max_entries: int = field(default_factory=lambda: _env_int("FINAGENT_MEMORY_MAX_ENTRIES", 500))
+    #: Nơi lưu nhật ký quyết định. Đặt trong thư mục dự án để dễ sao lưu và
+    #: không lẫn với nhật ký của TradingAgents gốc.
+    memory_log_path: Path = field(default_factory=lambda: Path(
+        _env_str("FINAGENT_MEMORY_LOG", str(PROJECT_ROOT / "data" / "decision_memory.md"))
+    ))
+    #: Nơi lưu checkpoint để chạy tiếp khi hỏng.
+    checkpoint_dir: Path = field(default_factory=lambda: Path(
+        _env_str("FINAGENT_CHECKPOINT_DIR", str(PROJECT_ROOT / "data" / "checkpoints"))
+    ))
+    #: Nơi lưu kết quả phân tích và backtest.
+    results_dir: Path = field(default_factory=lambda: Path(
+        _env_str("FINAGENT_RESULTS_DIR", str(PROJECT_ROOT / "data" / "results"))
+    ))
+    #: Số ngày nắm giữ trước khi chấm điểm một quyết định.
+    holding_period_days: int = field(default_factory=lambda: _env_int("FINAGENT_HOLDING_DAYS", 5))
+
+    # --- Lưu trạng thái để chạy tiếp khi hỏng -----------------------------
+    #: LangGraph lưu state sau mỗi bước; chạy hỏng thì chạy lại tiếp từ bước cuối
+    #: thay vì làm lại từ đầu. Rất đáng bật vì mỗi lượt phân tích tốn vài phút.
+    checkpoint_enabled: bool = field(default_factory=lambda: _env_bool("FINAGENT_CHECKPOINT", True))
+
+    # --- Độ sâu suy luận ---------------------------------------------------
+    #: Số vòng tranh luận giữa bò và gấu. Nhiều vòng hơn = soi kỹ hơn, nhưng tốn
+    #: thời gian và hạn mức API gấp bội.
+    extra_debate_rounds: int = field(default_factory=lambda: _env_int("FINAGENT_EXTRA_DEBATE_ROUNDS", 0))
+    #: Mức suy luận của Gemini: low / high. Để trống thì dùng mặc định của model.
+    google_thinking_level: str = field(default_factory=lambda: _env_str("FINAGENT_GOOGLE_THINKING", ""))
+    #: Nhiệt độ mẫu. Thấp hơn = ổn định hơn giữa các lần chạy.
+    temperature: float = field(default_factory=lambda: _env_float("TRADINGAGENTS_TEMPERATURE", 0.0))
+
+    # --- Độ giàu của ngữ cảnh ---------------------------------------------
+    #: Số bài tin tối đa cho mỗi mã.
+    news_article_limit: int = field(default_factory=lambda: _env_int("FINAGENT_NEWS_ARTICLE_LIMIT", 30))
+    #: Số bài tin vĩ mô tối đa.
+    global_news_article_limit: int = field(default_factory=lambda: _env_int("FINAGENT_GLOBAL_NEWS_LIMIT", 25))
+    #: Cửa sổ nhìn lại của tin vĩ mô (ngày).
+    global_news_lookback_days: int = field(default_factory=lambda: _env_int("FINAGENT_GLOBAL_NEWS_LOOKBACK", 14))
+
+    # --- Nguồn dữ liệu bổ trợ (không bắt buộc) ----------------------------
+    #: FRED cho chỉ số vĩ mô Mỹ (lãi suất Fed, CPI, lợi suất trái phiếu). Miễn phí
+    #: tại https://fred.stlouisfed.org/docs/api/api_key.html
+    #: Vĩ mô Mỹ tác động trực tiếp tới tỷ giá, vàng và crypto của Việt Nam.
+    fred_api_key: str = field(default_factory=lambda: _env_str("FRED_API_KEY", ""))
+    #: Polymarket cho xác suất các sự kiện tương lai (Fed giảm lãi suất, suy thoái).
+    #: Miễn phí, không cần khoá. Để tắt nếu không cần.
+    polymarket_enabled: bool = field(default_factory=lambda: _env_bool("FINAGENT_POLYMARKET", True))
+
+    # --- Chỉ số chuẩn để chấm điểm alpha ----------------------------------
+    #: Chỉ số so sánh cho từng nhóm tài sản. Backtest chấm điểm theo alpha —
+    #: lợi nhuận vượt chỉ số — nên phải có chỉ số đúng thị trường.
+    benchmark_vn: str = field(default_factory=lambda: _env_str("FINAGENT_BENCHMARK_VN", "VNINDEX"))
+    benchmark_crypto: str = field(default_factory=lambda: _env_str("FINAGENT_BENCHMARK_CRYPTO", "BTCUSDT"))
 
     # --- Sàn giao dịch thật (Binance) --------------------------------------
     binance_api_key: str = field(default_factory=lambda: _env_str("BINANCE_API_KEY", ""))

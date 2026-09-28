@@ -113,6 +113,98 @@ def _sync_api_key_env() -> None:
         os.environ[env_var] = settings.llm_api_key
 
 
+def build_portfolio_context():
+    """Dựng ngữ cảnh danh mục thật để các tác nhân tư vấn theo đúng sổ hiện có.
+
+    Không truyền ngữ cảnh này thì tác nhân không biết ta đang giữ gì, nên không
+    phân biệt được "mua thêm vào vị thế đã đầy" với "mở vị thế mới". Trả về
+    ``None`` nếu không dựng được — TradingAgents coi đó là "không có ngữ cảnh",
+    khác hẳn với "danh mục trống".
+    """
+    try:
+        from tradingagents.portfolio import PortfolioContext, Position
+    except ImportError:  # pragma: no cover - phòng khi TradingAgents đổi API
+        logger.debug("TradingAgents không có PortfolioContext — bỏ qua ngữ cảnh danh mục.")
+        return None
+
+    try:
+        from finagent.broker import get_broker
+
+        broker = get_broker()
+        positions = [
+            Position(
+                ticker=position["symbol"],
+                quantity=float(position["quantity"]),
+                average_price=float(position["avg_price"]) or None,
+            )
+            for position in broker.list_positions()
+        ]
+
+        # Tiền mặt: ưu tiên ví tiền đồng, quy về VND cho dễ hình dung.
+        cash = None
+        try:
+            cash = float(broker.get_cash("VND"))
+        except Exception:  # noqa: BLE001 - broker thật có thể không có ví VND
+            try:
+                cash = float(broker.get_cash("USDT")) * settings.usdt_vnd_rate
+            except Exception:  # noqa: BLE001
+                cash = None
+
+        return PortfolioContext(cash=cash, currency="VND", positions=positions)
+    except Exception as exc:  # noqa: BLE001 - thiếu ngữ cảnh không được làm hỏng phân tích
+        logger.warning("Không dựng được ngữ cảnh danh mục: %s", exc)
+        return None
+
+
+def build_graph_config(asset_class: str, backend_url: str | None = None) -> dict:
+    """Dựng cấu hình đầy đủ cho TradingAgents từ cấu hình của FinAgent.
+
+    Bật hết những gì có thể dùng: nhật ký quyết định để tự rút kinh nghiệm,
+    checkpoint để chạy tiếp khi hỏng, chỉ số chuẩn đúng thị trường để chấm alpha,
+    và độ giàu ngữ cảnh tin tức.
+    """
+    from tradingagents.default_config import DEFAULT_CONFIG
+
+    config = DEFAULT_CONFIG.copy()
+    config.update({
+        "llm_provider": settings.llm_provider,
+        "deep_think_llm": settings.deep_think_llm,
+        "quick_think_llm": settings.quick_think_llm,
+        "output_language": settings.output_language,
+        "max_debate_rounds": settings.max_debate_rounds + settings.extra_debate_rounds,
+        "max_risk_discuss_rounds": settings.max_risk_rounds + settings.extra_debate_rounds,
+        "backend_url": backend_url or settings.llm_backend_url or None,
+        "temperature": settings.temperature,
+
+        # Trí nhớ: ghi quyết định rồi tự rút kinh nghiệm ở lần chạy sau.
+        "memory_log_path": str(settings.memory_log_path),
+        "memory_log_max_entries": settings.memory_max_entries,
+
+        # Chạy tiếp khi hỏng thay vì làm lại từ đầu.
+        "checkpoint_enabled": settings.checkpoint_enabled,
+        "data_cache_dir": str(settings.checkpoint_dir),
+
+        # Độ giàu của ngữ cảnh.
+        "news_article_limit": settings.news_article_limit,
+        "global_news_article_limit": settings.global_news_article_limit,
+        "global_news_lookback_days": settings.global_news_lookback_days,
+
+        # Chấm điểm alpha theo đúng chỉ số của thị trường tương ứng.
+        "holding_period_days": settings.holding_period_days,
+        "benchmark_ticker": vendor.benchmark_for(asset_class),
+
+        # Lưu kết quả phân tích.
+        "results_dir": str(settings.results_dir),
+    })
+
+    if settings.google_thinking_level:
+        config["google_thinking_level"] = settings.google_thinking_level
+
+    # Mọi nhóm dữ liệu đều đi qua vendor FinAgent (đã cắm dữ liệu Việt Nam).
+    config["data_vendors"] = vendor.vendor_config()
+    return config
+
+
 def analyze_llm(symbol: str, trade_date: str | None = None, backend_url: str | None = None) -> dict:
     """Chạy TradingAgents (đa tác nhân LLM) trên dữ liệu đã cắm vào.
 
@@ -130,28 +222,22 @@ def analyze_llm(symbol: str, trade_date: str | None = None, backend_url: str | N
     _sync_api_key_env()
 
     try:
-        from tradingagents.default_config import DEFAULT_CONFIG
         from tradingagents.graph.trading_graph import TradingAgentsGraph
 
         vendor.register_vendor()
 
-        config = DEFAULT_CONFIG.copy()
-        config.update({
-            "llm_provider": settings.llm_provider,
-            "deep_think_llm": settings.deep_think_llm,
-            "quick_think_llm": settings.quick_think_llm,
-            "output_language": settings.output_language,
-            "max_debate_rounds": settings.max_debate_rounds,
-            "max_risk_discuss_rounds": settings.max_risk_rounds,
-            "backend_url": backend_url or settings.llm_backend_url or None,
-        })
-        config["data_vendors"] = vendor.vendor_config()
+        asset_class = vendor.detect_asset_class(symbol)
+        asset_type = "crypto" if asset_class == "crypto" else "stock"
+        config = build_graph_config(asset_class, backend_url=backend_url)
 
         graph = TradingAgentsGraph(debug=False, config=config)
-        asset_type = "crypto" if vendor.detect_asset_class(symbol) == "crypto" else "stock"
         date = trade_date or utcnow_iso()[:10]
 
-        state, signal = graph.propagate(symbol, date, asset_type=asset_type)
+        # Truyền danh mục thật để tác nhân tư vấn theo đúng sổ hiện có, thay vì
+        # nói chung chung cho một người đọc không rõ đang giữ gì.
+        portfolio = build_portfolio_context()
+
+        state, signal = graph.propagate(symbol, date, asset_type=asset_type, portfolio=portfolio)
 
         final_decision = ""
         if isinstance(state, dict):
@@ -462,4 +548,72 @@ def execute_approved(proposal: dict) -> dict:
         "message": order.message,
         "broker_ref": order.broker_ref,
         "currency": order.currency,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Chấm điểm quyết định cũ và tự rút kinh nghiệm
+# ---------------------------------------------------------------------------
+
+def settle_decisions(symbol: str, backend_url: str | None = None) -> dict:
+    """Chấm điểm các quyết định cũ của một mã đã đủ thời gian nắm giữ.
+
+    Mỗi quyết định được ghi lại kèm ngày và giá vào nhật ký. Sau khi đủ
+    ``holding_period_days`` phiên, bước này lấy lợi nhuận thực tế (và alpha so với
+    chỉ số chuẩn), rồi sinh một đoạn tự rút kinh nghiệm để bơm vào prompt của
+    Portfolio Manager ở lần phân tích sau. Đây là cơ chế hệ thống học từ chính
+    những quyết định sai của mình.
+    """
+    try:
+        from tradingagents.graph.trading_graph import TradingAgentsGraph
+    except ImportError as exc:  # pragma: no cover
+        return {"settled": False, "reason": f"Không import được TradingAgents: {exc}"}
+
+    vendor.register_vendor()
+    asset_class = vendor.detect_asset_class(symbol)
+    config = build_graph_config(asset_class, backend_url=backend_url)
+
+    try:
+        graph = TradingAgentsGraph(debug=False, config=config)
+        graph.settle_pending(symbol)
+    except Exception as exc:  # noqa: BLE001 - chấm điểm lỗi không được làm hỏng hệ thống
+        logger.warning("Chấm điểm quyết định cũ của %s thất bại: %s", symbol, exc)
+        return {"settled": False, "symbol": symbol, "reason": str(exc)}
+
+    return {"settled": True, "symbol": symbol}
+
+
+def settle_all(symbols: list[str] | None = None) -> list[dict]:
+    """Chấm điểm quyết định cũ cho nhiều mã.
+
+    ``None`` nghĩa là "dùng danh sách mặc định"; danh sách **rỗng** nghĩa là
+    "không chấm mã nào". Phải phân biệt hai trường hợp này — nếu dùng
+    ``symbols or default`` thì danh sách rỗng sẽ bị hiểu thành "chạy tất cả",
+    và một lệnh gọi rỗng bất ngờ lại tốn hàng loạt lời gọi LLM.
+    """
+    targets = [*settings.crypto_symbols, *settings.vn_symbols] if symbols is None else symbols
+    return [settle_decisions(symbol) for symbol in vendor.tradable_symbols(targets)]
+
+
+def memory_summary() -> dict:
+    """Đọc nhật ký quyết định: đã ghi bao nhiêu, bao nhiêu đã chấm điểm."""
+    path = settings.memory_log_path
+    if not path.exists():
+        return {"exists": False, "path": str(path), "entries": 0, "pending": 0, "resolved": 0}
+
+    try:
+        from tradingagents.decision_log import TradingMemoryLog
+
+        entries = TradingMemoryLog({"memory_log_path": str(path)}).load_entries()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Không đọc được nhật ký quyết định: %s", exc)
+        return {"exists": True, "path": str(path), "error": str(exc), "entries": 0, "pending": 0, "resolved": 0}
+
+    pending = sum(1 for entry in entries if not entry.get("resolved"))
+    return {
+        "exists": True,
+        "path": str(path),
+        "entries": len(entries),
+        "pending": pending,
+        "resolved": len(entries) - pending,
     }

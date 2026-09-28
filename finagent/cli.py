@@ -3,7 +3,7 @@
 Dùng cho cả máy chủ và máy con:
 
 * Máy chủ: ``init``, ``status``, ``collect``, ``scan``, ``run``, ``bot``, ``positions``,
-  ``broker-check``
+  ``broker-check``, ``backtest``, ``settle``, ``memory``
 * Máy con:  ``worker``, ``ping``
 
 Ví dụ::
@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 from finagent import storage
 from finagent.collectors.base import utcnow_iso
@@ -312,6 +313,97 @@ def cmd_broker_check(args) -> int:
     return 0
 
 
+def cmd_backtest(args) -> int:
+    """Chạy backtest trên lưới mã × ngày để đo chất lượng quyết định."""
+    from finagent.decision import backtest
+
+    storage.init_db()
+
+    symbols = [s.strip().upper() for s in args.symbols.split(",")] if args.symbols else None
+    targets = symbols or [*settings.crypto_symbols, *settings.vn_symbols]
+    dates = backtest.build_date_grid(args.start, args.end, args.every)
+
+    if not dates:
+        print(f"❌ Không có ngày nào trong khoảng {args.start} → {args.end}")
+        return 1
+
+    mode = "mô hình ML nhỏ (nhanh, miễn phí)" if args.ml_only else "đầy đủ 12 tác nhân LLM"
+    cells = len(targets) * len(dates)
+    print("=" * 62)
+    print("  BACKTEST")
+    print("=" * 62)
+    print(f"\n  Chế độ : {mode}")
+    print(f"  Mã     : {', '.join(targets)}")
+    print(f"  Ngày   : {args.start} → {args.end}, mỗi {args.every} ngày = {len(dates)} ngày")
+    print(f"  Tổng   : {cells} ô")
+
+    if not args.ml_only:
+        print(f"\n  ⏱️  Mỗi ô tốn vài phút (12 tác nhân LLM). Ước tính {cells * 3}–{cells * 6} phút.")
+        print("     Dùng --ml-only để thử nhanh trước.")
+
+    print("\n  Đang chạy…\n")
+    report = backtest.run(
+        symbols=targets, start=args.start, end=args.end,
+        every_n_days=args.every, run_id=args.run_id, run_llm=not args.ml_only,
+    )
+    print(report.render())
+
+    if report.log_path:
+        print(f"\n  Nhật ký: {report.log_path}")
+    return 0 if report.ok else 1
+
+
+def cmd_settle(args) -> int:
+    """Chấm điểm các quyết định cũ đã đủ thời gian nắm giữ, và tự rút kinh nghiệm."""
+    from finagent.decision import engine
+
+    storage.init_db()
+    targets = [s.strip().upper() for s in args.symbols.split(",")] if args.symbols else None
+
+    print("🔍 Đang chấm điểm các quyết định cũ…\n")
+    results = engine.settle_all(targets)
+    done = sum(1 for r in results if r.get("settled"))
+    for result in results:
+        mark = "✅" if result.get("settled") else "⚠️ "
+        detail = "" if result.get("settled") else f" — {result.get('reason', '')[:70]}"
+        print(f"  {mark} {result['symbol']}{detail}")
+
+    print(f"\n  Đã chấm: {done}/{len(results)} mã")
+    return 0
+
+
+def cmd_memory(args) -> int:
+    """Xem nhật ký quyết định — hệ thống đã ghi gì và học được gì."""
+    from finagent.decision import engine
+
+    storage.init_db()
+    info = engine.memory_summary()
+
+    print("=" * 62)
+    print("  NHẬT KÝ QUYẾT ĐỊNH")
+    print("=" * 62)
+    print(f"\n  Đường dẫn : {info['path']}")
+    if not info.get("exists"):
+        print("\n  Chưa có nhật ký. Chạy 'finagent scan' để ghi quyết định đầu tiên.")
+        return 0
+
+    print(f"  Tổng mục  : {info.get('entries', 0)}")
+    print(f"  Đã chấm   : {info.get('resolved', 0)}")
+    print(f"  Còn chờ   : {info.get('pending', 0)}")
+
+    if info.get("pending"):
+        print("\n  ℹ️  Quyết định còn chờ sẽ được chấm sau khi đủ thời gian nắm giữ.")
+        print("     Chấm ngay: finagent settle")
+
+    path = Path(info["path"])
+    if path.exists() and args.show:
+        print("\n" + "─" * 62)
+        print(path.read_text()[-4000:])
+    elif path.exists():
+        print(f"\n  Xem nội dung: finagent memory --show")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="finagent",
@@ -339,6 +431,23 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("run", help="Chạy bộ giám sát định kỳ (máy chủ)").set_defaults(func=cmd_run)
     sub.add_parser("bot", help="Chạy bot Telegram").set_defaults(func=cmd_bot)
     sub.add_parser("broker-check", help="Kiểm tra kết nối tới sàn giao dịch").set_defaults(func=cmd_broker_check)
+
+    p_bt = sub.add_parser("backtest", help="Chạy backtest để đo chất lượng quyết định")
+    p_bt.add_argument("--symbols", default=None, help="Danh sách mã, cách nhau dấu phẩy (mặc định: toàn bộ)")
+    p_bt.add_argument("--start", required=True, help="Ngày bắt đầu YYYY-MM-DD")
+    p_bt.add_argument("--end", required=True, help="Ngày kết thúc YYYY-MM-DD")
+    p_bt.add_argument("--every", type=int, default=7, help="Cách nhau bao nhiêu ngày (mặc định 7)")
+    p_bt.add_argument("--run-id", default=None, help="Mã lượt chạy (chạy lại để tiếp tục lượt dở)")
+    p_bt.add_argument("--ml-only", action="store_true", help="Chỉ dùng mô hình ML, nhanh và miễn phí")
+    p_bt.set_defaults(func=cmd_backtest)
+
+    p_settle = sub.add_parser("settle", help="Chấm điểm quyết định cũ và tự rút kinh nghiệm")
+    p_settle.add_argument("--symbols", default=None, help="Danh sách mã, cách nhau dấu phẩy")
+    p_settle.set_defaults(func=cmd_settle)
+
+    p_mem = sub.add_parser("memory", help="Xem nhật ký quyết định")
+    p_mem.add_argument("--show", action="store_true", help="In cả nội dung nhật ký")
+    p_mem.set_defaults(func=cmd_memory)
 
     p_worker = sub.add_parser("worker", help="Chạy máy con thu thập")
     p_worker.add_argument("--name", default=None, help="Tên máy con (mặc định lấy hostname)")

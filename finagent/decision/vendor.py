@@ -40,6 +40,10 @@ GOLD_BRAND_SYMBOLS = {
     "PQHNVM", "PQHN24NTT", "BT9999NTT", "BTSJC", "VIETTINMSJC", "VNGSJC", "XAUUSD",
 }
 
+#: Chỉ số thị trường Việt Nam. Dùng làm chỉ số chuẩn để chấm điểm alpha.
+#: Không phải tài sản giao dịch được — không mã nào trong đây sinh đề xuất mua bán.
+VN_INDEX_SYMBOLS = {"VNINDEX", "VN30", "HNXINDEX", "UPCOMINDEX"}
+
 #: Các đồng tiền cơ sở được coi là crypto khi ghép với USDT/USD.
 _CRYPTO_BASES = re.compile(r"^(BTC|ETH|SOL|BNB|XRP|ADA|DOGE|TON|AVAX|MATIC|LTC|LINK|DOT)")
 
@@ -56,6 +60,8 @@ def detect_asset_class(symbol: str) -> str:
     """
     upper = symbol.upper().replace("-", "")
 
+    if upper in VN_INDEX_SYMBOLS:
+        return "vn_index"
     if upper in GOLD_BRAND_SYMBOLS or upper in ("XAUUSD", "XAU"):
         return "gold"
     if _CRYPTO_BASES.search(upper) and (upper.endswith("USDT") or upper.endswith("USD")):
@@ -187,6 +193,11 @@ def get_stock_data(symbol: str, start_date: str, end_date: str) -> str:
         return (
             f"# {symbol} là vàng — hệ thống chỉ có giá hiện tại, không có chuỗi OHLCV.\n"
             "Hãy dùng dữ liệu tin tức (get_news) và giá vàng mới nhất trong kho để phân tích."
+        )
+    if asset_class == "vn_index":
+        return (
+            f"# {symbol} là chỉ số thị trường, không phải tài sản giao dịch được.\n"
+            "Dùng số liệu này làm bối cảnh thị trường chung, không đưa ra đề xuất mua bán nó."
         )
     try:
         if asset_class == "crypto":
@@ -325,12 +336,51 @@ def get_insider_transactions(ticker: str = "", *args, **kwargs) -> str:
     return _not_available("giao dịch nội bộ", ticker)
 
 
-def get_macro_indicators(indicator: str = "", *args, **kwargs) -> str:
-    return _not_available(f"chỉ số vĩ mô {indicator!r}")
+def get_macro_indicators(indicator: str = "", curr_date: str = "", look_back_days: int | None = None,
+                         *args, **kwargs) -> str:
+    """Chỉ số vĩ mô — chuyển tiếp sang FRED khi có khoá.
+
+    Vĩ mô Mỹ (lãi suất Fed, CPI, lợi suất trái phiếu) tác động trực tiếp tới tỷ giá
+    USD/VND, giá vàng và crypto — nên đây là ngữ cảnh có giá trị cho thị trường
+    Việt Nam, không phải dữ liệu xa lạ.
+    """
+    from finagent.config import settings
+
+    if not settings.fred_api_key:
+        return (
+            "KHÔNG CÓ DỮ LIỆU VĨ MÔ: chưa cấu hình FRED_API_KEY. "
+            "Đăng ký miễn phí tại https://fred.stlouisfed.org/docs/api/api_key.html "
+            "rồi thêm FRED_API_KEY vào .env để có chỉ số lãi suất Fed, CPI, lợi suất trái phiếu."
+        )
+    try:
+        from tradingagents.dataflows.vendors.fred import get_macro_data
+
+        return get_macro_data(indicator, curr_date, look_back_days)
+    except Exception as exc:  # noqa: BLE001 - thiếu dữ liệu vĩ mô không được làm hỏng lượt phân tích
+        logger.warning("FRED thất bại cho %r: %s", indicator, exc)
+        return f"KHÔNG LẤY ĐƯỢC DỮ LIỆU VĨ MÔ {indicator!r}: {exc}"
 
 
-def get_prediction_markets(topic: str = "", *args, **kwargs) -> str:
-    return _not_available(f"thị trường dự đoán {topic!r}")
+def get_prediction_markets(topic: str = "", limit: int | None = None, curr_date: str | None = None,
+                           *args, **kwargs) -> str:
+    """Xác suất sự kiện tương lai — chuyển tiếp sang Polymarket (miễn phí, không cần khoá).
+
+    Ví dụ hữu ích: xác suất Fed giảm lãi suất, xác suất suy thoái — đều ảnh hưởng
+    tới vàng và crypto.
+    """
+    from finagent.config import settings
+
+    if not settings.polymarket_enabled:
+        return _not_available(f"thị trường dự đoán {topic!r} (đã tắt bằng FINAGENT_POLYMARKET=false)")
+    try:
+        from tradingagents.dataflows.vendors.polymarket import (
+            get_prediction_markets as polymarket_markets,
+        )
+
+        return polymarket_markets(topic, limit, curr_date)
+    except Exception as exc:  # noqa: BLE001 - dữ liệu bổ trợ, không được làm hỏng lượt phân tích
+        logger.warning("Polymarket thất bại cho %r: %s", topic, exc)
+        return f"KHÔNG LẤY ĐƯỢC DỮ LIỆU DỰ ĐOÁN {topic!r}: {exc}"
 
 
 def _format_news(items: list[dict], title: str) -> str:
@@ -650,3 +700,21 @@ def vendor_config() -> dict:
         "macro_data": VENDOR_NAME,
         "prediction_markets": VENDOR_NAME,
     }
+
+
+def benchmark_for(asset_class: str) -> str:
+    """Chỉ số chuẩn để chấm điểm alpha cho một nhóm tài sản.
+
+    Backtest so lợi nhuận với chỉ số này; không có chỉ số đúng thị trường thì điểm
+    alpha vô nghĩa. Cổ phiếu Việt Nam so với VN-Index, crypto so với Bitcoin.
+    """
+    from finagent.config import settings
+
+    if asset_class == "crypto":
+        return settings.benchmark_crypto
+    return settings.benchmark_vn
+
+
+def tradable_symbols(symbols: list[str]) -> list[str]:
+    """Lọc bỏ chỉ số — chỉ số dùng làm bối cảnh, không sinh đề xuất mua bán."""
+    return [s for s in symbols if detect_asset_class(s) != "vn_index"]
