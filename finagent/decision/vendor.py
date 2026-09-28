@@ -643,6 +643,72 @@ def check_tradingagents_version() -> str | None:
     )
 
 
+def _install_opencode_go_headers() -> None:
+    """Gửi header mà endpoint OpenCode Go bắt buộc.
+
+    Go **từ chối** mọi yêu cầu thiếu header ``x-opencode-session``, trả về lỗi
+    ``MissingSessionID``. Đây không phải tuỳ chọn: thiếu nó là không gọi được gì.
+
+    Ngoài ra Go yêu cầu client tự giới thiệu bằng User-Agent riêng thay vì tên thư
+    viện HTTP chung, để họ theo dõi lạm dụng. Dùng tên mặc định của thư viện có thể
+    bị coi là traffic bất thường.
+
+    Cách cắm: ``OpenAIClient`` chỉ chuyển tiếp các khoá trong ``_PASSTHROUGH_KWARGS``
+    xuống ``ChatOpenAI``, và danh sách đó không có ``default_headers``. Nên phải mở
+    danh sách ra, rồi bổ sung header từ ``build_llm_kwargs``.
+    """
+    from finagent.config import settings
+
+    if not settings.llm_backend_url or "opencode.ai" not in settings.llm_backend_url:
+        return
+
+    try:
+        from tradingagents.llm_clients import factory, openai_client
+
+        # 1) Cho phép chuyển tiếp default_headers xuống ChatOpenAI.
+        if "default_headers" not in openai_client._PASSTHROUGH_KWARGS:
+            openai_client._PASSTHROUGH_KWARGS = (
+                *openai_client._PASSTHROUGH_KWARGS, "default_headers",
+            )
+
+        # 2) Bổ sung header khi dựng kwargs cho provider OpenAI-compatible.
+        #
+        # Luôn bọc lại từ hàm GỐC, không bọc chồng lên bản đã bọc. Nhờ vậy hàm cài
+        # lại được nhiều lần (cần cho test, và để đổi mã phiên lúc đang chạy) mà
+        # không tạo ra chuỗi bọc vô hạn.
+        original = getattr(factory.build_llm_kwargs, "_finagent_original", None)
+        if original is None:
+            original = factory.build_llm_kwargs
+
+        def build_llm_kwargs_with_headers(config: dict) -> dict:
+            kwargs = original(config)
+            if str(config.get("llm_provider", "")).lower() == "openai_compatible":
+                kwargs["default_headers"] = {
+                    # Go đòi User-Agent riêng, không nhận tên thư viện HTTP chung.
+                    "User-Agent": settings.llm_user_agent,
+                    # Go đòi mã phiên để định tuyến và tối ưu prompt caching. Dùng
+                    # một mã ổn định cho cả tiến trình để các lời gọi trong cùng một
+                    # lượt phân tích được coi là một phiên.
+                    "x-opencode-session": settings.llm_session_id,
+                }
+            return kwargs
+
+        build_llm_kwargs_with_headers._finagent_headers = True
+        build_llm_kwargs_with_headers._finagent_original = original
+        factory.build_llm_kwargs = build_llm_kwargs_with_headers
+
+        # trading_graph nhập tên hàm trực tiếp nên phải vá cả ở đó.
+        from tradingagents.graph import trading_graph
+
+        trading_graph.build_llm_kwargs = build_llm_kwargs_with_headers
+
+        logger.info(
+            "Đã cắm header OpenCode Go (phiên %s).", settings.llm_session_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - không cắm được thì vẫn chạy tiếp
+        logger.warning("Không cắm được header OpenCode Go: %s", exc)
+
+
 def install_patches() -> None:
     """Thay các lệnh gọi cứng tới nhà cung cấp Mỹ bằng bản dùng dữ liệu Việt Nam.
 
@@ -675,6 +741,8 @@ def install_patches() -> None:
 
     logger.info("Đã thay các điểm gọi cứng tới nhà cung cấp Mỹ bằng dữ liệu FinAgent.")
 
+
+    _install_opencode_go_headers()
 
 def register_vendor() -> None:
     """Chèn vendor ``finagent`` vào bảng định tuyến của TradingAgents.

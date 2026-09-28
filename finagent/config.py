@@ -303,6 +303,13 @@ class Settings:
     binance_live_confirm: str = field(default_factory=lambda: _env_str("BINANCE_LIVE_CONFIRM", ""))
     #: Phí sàn Binance spot (0,1% mặc định; 0,075% nếu trả bằng BNB).
     binance_fee_rate: float = field(default_factory=lambda: _env_float("BINANCE_FEE_RATE", 0.001))
+    #: Tên client gửi cho endpoint OpenCode Go. Go yêu cầu client tự giới thiệu
+    #: bằng User-Agent riêng thay vì tên thư viện HTTP chung.
+    llm_user_agent: str = field(default_factory=lambda: _env_str("FINAGENT_LLM_USER_AGENT", "FinAgent/1.0"))
+    #: Mã phiên gửi kèm mỗi lời gọi. Endpoint OpenCode Go **bắt buộc** có header
+    #: ``x-opencode-session``, thiếu là bị từ chối với lỗi MissingSessionID.
+    llm_session_id: str = field(default_factory=lambda: _env_str("FINAGENT_LLM_SESSION", "finagent"))
+
     #: Ghi đè địa chỉ API. Để trống thì tự chọn theo ``binance_testnet``.
     #: Hữu ích khi dùng Binance US, một proxy, hoặc sàn giả lập trong test.
     binance_base_url: str = field(default_factory=lambda: _env_str("BINANCE_BASE_URL", ""))

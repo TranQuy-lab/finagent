@@ -247,3 +247,61 @@ class TestScanTimes:
         for text in settings.scan_times:
             hour = int(str(text).split(":")[0])
             assert open_h <= hour <= close_h, f"mốc {text} nằm ngoài giờ giao dịch"
+
+
+class TestOpenCodeGoHeaders:
+    """Endpoint OpenCode Go BẮT BUỘC có header x-opencode-session.
+
+    Thiếu nó thì mọi yêu cầu bị từ chối với lỗi MissingSessionID — không phải suy
+    giảm chất lượng mà là không gọi được gì. Đã xác nhận bằng cách gọi thật.
+    """
+
+    def test_co_cau_hinh_header(self):
+        from finagent.config import settings
+
+        assert settings.llm_user_agent, "phải có User-Agent riêng cho client"
+        assert settings.llm_session_id, "phải có mã phiên"
+
+    def test_endpoint_mac_dinh_la_go(self):
+        """Go và Zen là hai endpoint khác nhau; trỏ nhầm là trả tiền theo token."""
+        from finagent.config import settings
+
+        if "opencode.ai" in (settings.llm_backend_url or ""):
+            assert "/zen/go/" in settings.llm_backend_url or "go." in settings.llm_backend_url, (
+                "endpoint OpenCode phải là /zen/go/v1 (gói Go), không phải /zen/v1 (Zen)"
+            )
+
+    def test_cam_header_dung_cach(self, monkeypatch):
+        """Kiểm tra hàm cắm header chạy được và không ném lỗi với cấu hình Go."""
+        from finagent.config import settings
+        from finagent.decision import vendor
+
+        monkeypatch.setattr(settings, "llm_backend_url", "https://opencode.ai/zen/go/v1", raising=False)
+        monkeypatch.setattr(settings, "llm_user_agent", "FinAgent/1.0", raising=False)
+        monkeypatch.setattr(settings, "llm_session_id", "phien-thu", raising=False)
+
+        # Gọi trực tiếp hàm cắm, không qua install_patches (vốn chỉ chạy một lần).
+        vendor._install_opencode_go_headers()
+
+        from tradingagents.graph import trading_graph
+
+        config = {"llm_provider": "openai_compatible"}
+        kwargs = trading_graph.build_llm_kwargs(config)
+
+        assert "default_headers" in kwargs
+        assert kwargs["default_headers"]["x-opencode-session"] == "phien-thu"
+        assert kwargs["default_headers"]["User-Agent"] == "FinAgent/1.0"
+
+    def test_khong_cam_header_cho_nha_cung_cap_khac(self, monkeypatch):
+        """Cắm header của Go vào nhà cung cấp khác là gửi rác cho họ."""
+        from finagent.config import settings
+        from finagent.decision import vendor
+
+        monkeypatch.setattr(settings, "llm_backend_url", "https://opencode.ai/zen/go/v1", raising=False)
+        vendor._install_opencode_go_headers()
+
+        from tradingagents.graph import trading_graph
+
+        kwargs = trading_graph.build_llm_kwargs({"llm_provider": "openai"})
+
+        assert "default_headers" not in kwargs
