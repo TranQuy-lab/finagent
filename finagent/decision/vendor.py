@@ -226,7 +226,53 @@ def get_stock_data(symbol: str, start_date: str, end_date: str) -> str:
     change = (last_close - first_close) / first_close * 100 if first_close else 0.0
     lines.append("")
     lines.append(f"# Biến động cả kỳ: {change:+.2f}% ({first_close:.4f} → {last_close:.4f})")
+
+    # Nối thêm tầng vi mô: sổ lệnh, khối ngoại, dòng tiền chủ động.
+    #
+    # Ghép vào đây thay vì tạo công cụ mới, vì danh sách công cụ của TradingAgents
+    # được khai báo cứng trong khung — thêm hàm mới sẽ không được các tác nhân gọi.
+    # Hàm này thì tác nhân phân tích thị trường đã gọi sẵn.
+    #
+    # Đây là phần "tổng hợp thông tin": giá chỉ cho biết chuyện đã xảy ra, còn sổ
+    # lệnh và dòng tiền cho biết áp lực đang hình thành.
+    micro = _microstructure_section(symbol, asset_class)
+    if micro:
+        lines += ["", micro]
+
     return "\n".join(lines)
+
+
+def _microstructure_section(symbol: str, asset_class: str) -> str:
+    """Khối dữ liệu vi mô để nối vào báo cáo giá. Lỗi thì trả về chuỗi rỗng."""
+    parts: list[str] = []
+    try:
+        from finagent.collectors.microstructure import (
+            fetch_microstructure,
+            format_microstructure,
+        )
+
+        parts.append(format_microstructure(fetch_microstructure(symbol, asset_class)))
+    except Exception as exc:  # noqa: BLE001 - dữ liệu bổ trợ, không được làm hỏng
+        logger.warning("Không lấy được dữ liệu vi mô cho %s: %s", symbol, exc)
+
+    # Chứng khoán Việt Nam có hai nguồn giá độc lập, nên đối chiếu được với nhau.
+    # Crypto chỉ có Binance nên không có gì để đối chiếu.
+    if asset_class == "vn_stock":
+        try:
+            from finagent.collectors.vnstock import cross_check_price
+
+            check = cross_check_price(symbol)
+            icon = {"high": "✅", "low": "⚠️", "conflict": "❌", "none": "❌"}.get(
+                check["confidence"], "⚠️"
+            )
+            parts.append(
+                f"# Kiểm chứng giá từ hai nguồn độc lập\n"
+                f"{icon} {check['note']}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Không đối chiếu được giá %s: %s", symbol, exc)
+
+    return "\n\n".join(part for part in parts if part)
 
 
 def get_indicators(symbol: str, indicator: str, curr_date: str, look_back_days: int = 30) -> str:

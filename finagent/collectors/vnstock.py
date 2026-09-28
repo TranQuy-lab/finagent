@@ -77,22 +77,50 @@ def _fetch_via_dchart(symbol: str, session: requests.Session) -> PricePoint:
 
 
 def _fetch_via_ssi(symbol: str, session: requests.Session) -> PricePoint:
-    """Dự phòng: lấy giá tham chiếu từ SSI iBoard (đã là VND)."""
+    """Dự phòng: lấy giá khớp gần nhất từ SSI iBoard (đã là VND).
+
+    **Thứ tự ưu tiên trường rất quan trọng.** iBoard trả về nhiều trường giá khác
+    nhau, và chúng không cùng ý nghĩa:
+
+    ======================  ====================================================
+    Trường                  Ý nghĩa
+    ======================  ====================================================
+    ``matchedPrice``        Giá khớp gần nhất — đây mới là "giá hiện tại"
+    ``avgPrice``            Giá khớp bình quân cả phiên
+    ``refPrice``            Giá tham chiếu, tức **giá đóng cửa hôm trước**
+    ``priorClosePrice``     Giá đóng cửa hôm trước
+    ======================  ====================================================
+
+    Bản đầu tiên của hàm này đọc ``refPrice``, tức là ghi giá đóng cửa hôm qua như
+    thể là giá hôm nay — sai tới mức bằng cả biên độ một phiên. Lỗi chỉ lộ ra khi
+    đối chiếu chéo với VNDirect: hai nguồn lệch nhau ~2,2% một cách có hệ thống
+    trên gần như mọi mã, trong khi lệch thật chỉ khoảng 0,1–0,2%.
+    """
     response = session.get(SSI_URL.format(symbol=symbol.upper()), headers=SSI_HEADERS, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     data = response.json().get("data") or {}
-    reference = data.get("refPrice") or data.get("priorClosePrice")
-    if not reference:
-        raise RuntimeError(f"SSI không trả về giá tham chiếu cho {symbol}")
+
+    price = data.get("matchedPrice") or data.get("avgPrice")
+    if not price:
+        # Ngoài giờ giao dịch chưa có giá khớp nào thì đành dùng giá tham chiếu,
+        # nhưng phải nói rõ nguồn gốc qua trường ``source``.
+        price = data.get("refPrice") or data.get("priorClosePrice")
+        if not price:
+            raise RuntimeError(f"SSI không trả về giá nào cho {symbol}")
+        used_reference = True
+    else:
+        used_reference = False
 
     return PricePoint(
         symbol=symbol.upper(),
         asset_class="vn_stock",
-        price=float(reference),
+        price=float(price),
         currency="VND",
-        change_pct_24h=None,  # iBoard không kèm % thay đổi
-        volume=None,
-        source="ssi_iboard",
+        change_pct_24h=(
+            float(data["priceChangePercent"]) if data.get("priceChangePercent") is not None else None
+        ),
+        volume=float(data["nmTotalTradedQty"]) if data.get("nmTotalTradedQty") else None,
+        source="ssi_iboard_refprice" if used_reference else "ssi_iboard",
     )
 
 
@@ -113,6 +141,87 @@ def fetch_price(symbol: str, session: requests.Session | None = None) -> PricePo
         errors.append(f"ssi: {exc}")
 
     raise RuntimeError(f"Không lấy được giá {symbol} — " + "; ".join(errors))
+
+
+#: Mức lệch tối đa được coi là hai nguồn khớp nhau. Chứng khoán Việt Nam niêm yết
+#: theo bước giá 10–50 đồng, nên lệch vài chục đồng là bình thường (một nguồn lấy
+#: giá khớp gần nhất, nguồn kia lấy giá tham chiếu). Lệch quá 0,5% mới đáng ngờ.
+PRICE_AGREEMENT_TOLERANCE = 0.005
+
+
+def cross_check_price(symbol: str, session: requests.Session | None = None) -> dict:
+    """Lấy giá từ **cả hai** nguồn rồi đối chiếu, thay vì tin nguồn đầu tiên trả lời.
+
+    ``fetch_price`` dừng ngay khi nguồn chính thành công — nhanh, nhưng không có gì
+    bảo đảm con số đó đúng. Hàm này hỏi cả VNDirect lẫn SSI và so với nhau:
+
+    - Hai nguồn khớp trong dung sai → độ tin cậy cao.
+    - Hai nguồn lệch nhau → nghi ngờ có nguồn trả dữ liệu cũ hoặc sai mã.
+
+    Đây là phần cốt lõi của tổng hợp thông tin: một con số từ một nguồn là dữ liệu,
+    cùng con số từ hai nguồn khớp nhau mới là thông tin.
+    """
+    http = session or requests
+    prices: dict[str, float] = {}
+    errors: dict[str, str] = {}
+
+    for name, fetch in (("vndirect_dchart", _fetch_via_dchart), ("ssi_iboard", _fetch_via_ssi)):
+        try:
+            prices[name] = float(fetch(symbol, http).price)
+        except Exception as exc:  # noqa: BLE001 - một nguồn hỏng không chặn nguồn kia
+            errors[name] = str(exc)
+            logger.debug("Đối chiếu %s: nguồn %s thất bại: %s", symbol, name, exc)
+
+    if not prices:
+        return {
+            "symbol": symbol, "agreed": False, "confidence": "none",
+            "prices": {}, "errors": errors,
+            "note": f"Không nguồn nào trả lời được cho {symbol}.",
+        }
+
+    if len(prices) == 1:
+        only_source, only_price = next(iter(prices.items()))
+        return {
+            "symbol": symbol, "agreed": True, "confidence": "low",
+            "prices": prices, "errors": errors, "consensus_price": only_price,
+            "note": (
+                f"Chỉ một nguồn trả lời ({only_source} = {only_price:,.0f} VND), "
+                "chưa đối chiếu được với nguồn nào khác."
+            ),
+        }
+
+    low, high = min(prices.values()), max(prices.values())
+    spread = (high - low) / low if low else 0.0
+    agreed = spread <= PRICE_AGREEMENT_TOLERANCE
+
+    if agreed:
+        note = (
+            f"Hai nguồn khớp nhau: "
+            + ", ".join(f"{name} {value:,.0f}" for name, value in sorted(prices.items()))
+            + f" VND (lệch {spread:.3%})."
+        )
+    else:
+        note = (
+            "⚠️ HAI NGUỒN LỆCH NHAU: "
+            + ", ".join(f"{name} {value:,.0f}" for name, value in sorted(prices.items()))
+            + f" VND (lệch {spread:.2%}). Nên thận trọng: có thể một nguồn đang trả "
+            "dữ liệu cũ, hoặc mã bị nhầm."
+        )
+
+    return {
+        "symbol": symbol,
+        "agreed": agreed,
+        #: Độ tin cậy: hai nguồn khớp là "high", lệch nhau là "conflict".
+        "confidence": "high" if agreed else "conflict",
+        "prices": prices,
+        "errors": errors,
+        "spread": spread,
+        # Khi khớp thì lấy trung bình; khi lệch thì lấy nguồn chính (dchart) vì đó
+        # là nguồn vẫn dùng khi chạy bình thường — đổi hành vi lúc có tranh chấp sẽ
+        # khiến kết quả khó lần lại.
+        "consensus_price": (low + high) / 2 if agreed else prices.get("vndirect_dchart", low),
+        "note": note,
+    }
 
 
 def collect(symbols: list[str], worker: str = "unknown") -> tuple[list[dict], list[str]]:

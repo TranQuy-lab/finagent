@@ -163,6 +163,40 @@ Một mô hình hồi quy logistic viết thuần bằng numpy, dùng **7 đặc
 Kết quả: xác suất giá tăng. Mô hình **chỉ huấn luyện trên dữ liệu trước ngày phân
 tích** — không nhìn về tương lai, nếu không kết quả sẽ đẹp một cách giả tạo.
 
+### Tầng 2.5 — Tổng hợp thông tin vi mô
+
+Giá chỉ cho biết chuyện **đã xảy ra**. Tầng này đọc những thứ đi trước giá, lấy từ
+sổ lệnh và dòng tiền của chính sàn:
+
+| Tín hiệu | Nguồn | Ý nghĩa |
+|---|---|---|
+| Mất cân bằng thanh khoản | Binance (crypto), SSI (chứng khoán) | Bên mua hay bên bán đang dày hơn |
+| Khối ngoại ròng | SSI | Nhà đầu tư nước ngoài mua ròng hay bán ròng |
+| Dòng tiền chủ động | SSI | Lệnh nào đang sốt ruột hơn |
+| Phí funding, open interest, long/short | Binance Futures | Thị trường đang nghiêng về bên nào |
+| Giá trần / giá sàn | SSI | Còn bao xa tới biên độ |
+
+**Đối chiếu chéo hai nguồn giá.** Chứng khoán Việt Nam có hai nguồn độc lập
+(VNDirect và SSI), nên hệ thống hỏi cả hai và so với nhau. Một con số từ một nguồn
+là *dữ liệu*; cùng con số từ hai nguồn khớp nhau mới là *thông tin*. Lệch quá 0,5%
+thì báo động.
+
+**Vì sao phải đo độ ổn định trước khi tin một tín hiệu.** Cách đo sổ lệnh hiển
+nhiên nhất là cộng khối lượng của N mức gần giá khớp. Đo thực tế 8 lần liên tiếp:
+
+| Cách đo | Độ lệch chuẩn | Kết luận |
+|---|---|---|
+| 5 mức đầu | 31% | ❌ nhiễu, đảo dấu giữa các lần gọi |
+| 50 mức đầu | 45% | ❌ nhiễu |
+| 100 mức đầu | 38% | ❌ nhiễu |
+| 500 mức đầu | 5,5% | ✅ ổn định |
+| **Thanh khoản trong ±0,5% giá khớp** | **2,2%** | ✅ **dùng cách này** |
+| SSI sổ lệnh 3 mức | 0,07% | ✅ rất ổn định |
+
+Đưa một tín hiệu nhiễu cho mô hình còn tệ hơn không đưa gì, vì nó tạo ra tự tin
+giả. Nên hệ thống dùng thanh khoản quanh giá khớp trên sổ lệnh sâu (1000 mức), và
+ngưỡng báo động khác nhau theo nhóm tài sản vì cách đo khác nhau.
+
 ### Tầng 3 — 12 tác nhân LLM
 
 Đây là phần "suy nghĩ" của hệ thống, mô phỏng một công ty giao dịch:
@@ -281,6 +315,21 @@ vô tình bật tiền thật chỉ vì sửa nhầm một dòng.
 
 Bản quyết định thật do hệ thống viết có trích đúng số tiền mặt và việc danh mục
 đang không giữ FPT — chứng minh **ngữ cảnh danh mục đã được truyền tới tác nhân**.
+
+### Lỗi thật do đối chiếu chéo phát hiện
+
+Khi mới thêm phần đối chiếu hai nguồn giá, kết quả báo **4/5 mã lệch nhau ~2,2%** —
+lệch có hệ thống trên gần như mọi mã, một mức quá lớn để là sai số bình thường.
+
+Truy vết ra: hàm dự phòng SSI đọc trường ``refPrice``, nhưng đó là **giá tham
+chiếu, tức giá đóng cửa hôm trước**, không phải giá hiện tại. Giá khớp thật nằm ở
+``matchedPrice``. Nghĩa là mỗi khi nguồn chính lỗi và hệ thống chuyển sang SSI, nó
+ghi **giá cũ** như thể giá hiện tại — sai tới mức bằng cả biên độ một phiên.
+
+Sau khi sửa: **5/5 mã khớp nhau**, trong đó 4 mã khớp chính xác 0,000%.
+
+Đây là ví dụ rõ nhất cho giá trị của việc tổng hợp nhiều nguồn: một nguồn thì không
+có cách nào biết mình đang đọc sai trường.
 
 ### Kết quả backtest — đọc kỹ trước khi nghĩ tới tiền thật
 

@@ -28,12 +28,22 @@ STAGE="$DIST_DIR/$BUNDLE_NAME"
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 
 # Những gì máy con thực sự cần, suy ra từ cây import của tasks.py và celery_app.py.
+#
+# Liệt kê TỪNG TỆP chứ không chép cả thư mục collectors/. Đã từng chép cả thư mục
+# và suýt mang theo microstructure.py — tệp đó chỉ máy chủ dùng (vendor.py gọi để
+# lấy sổ lệnh và khối ngoại lúc phân tích). Danh sách tường minh khiến ranh giới
+# rõ ràng và tệp mới thêm vào sẽ không tự động lọt vào gói.
 WORKER_MODULES=(
     "finagent/__init__.py"
     "finagent/config.py"
     "finagent/celery_app.py"
     "finagent/tasks.py"
-    "finagent/collectors"
+    "finagent/collectors/__init__.py"
+    "finagent/collectors/base.py"
+    "finagent/collectors/crypto.py"
+    "finagent/collectors/gold.py"
+    "finagent/collectors/news.py"
+    "finagent/collectors/vnstock.py"
 )
 
 say "Dọn gói cũ"

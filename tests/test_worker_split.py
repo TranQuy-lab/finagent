@@ -111,23 +111,26 @@ class TestWorkerBundleDefinition:
             for line in script[start:end].splitlines()
             if line.strip().startswith('"')
         }
-        # Script dùng thư mục cho collectors, còn test liệt kê từng tệp.
-        expected = set()
-        for item in declared:
-            path = PROJECT_ROOT / item
-            if path.is_dir():
-                expected.update(
-                    str(f.relative_to(PROJECT_ROOT))
-                    for f in path.glob("*.py")
-                )
-            else:
-                expected.add(item)
+        # Cả hai bên đều liệt kê tường minh, nên so trực tiếp được.
+        expected = set(declared)
 
         assert expected == set(WORKER_MODULES), (
             "Danh sách tệp trong make_worker_bundle.sh lệch với test. "
             f"Chỉ có trong script: {sorted(expected - set(WORKER_MODULES))}. "
             f"Chỉ có trong test: {sorted(set(WORKER_MODULES) - expected)}."
         )
+
+    def test_khong_dua_microstructure_vao_goi(self):
+        """microstructure.py chỉ máy chủ dùng (vendor.py gọi lúc phân tích).
+
+        Đã từng suýt lọt vào gói vì script chép cả thư mục collectors/.
+        """
+        from finagent.decision import vendor  # noqa: F401  — chỉ để chắc module tồn tại
+
+        assert "finagent/collectors/microstructure.py" not in WORKER_MODULES
+        assert "finagent/collectors/microstructure.py" not in (
+            PROJECT_ROOT / "deploy/make_worker_bundle.sh"
+        ).read_text().split("WORKER_MODULES=(")[1].split(")")[0]
 
     def test_script_khong_chep_thu_muc_nang(self):
         """Script đóng gói không được chép vendor/ hay các thư mục chỉ máy chủ dùng.
