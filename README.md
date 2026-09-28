@@ -5,6 +5,11 @@
 > để ra quyết định tài chính; máy chủ **báo cáo qua Telegram**, người dùng duyệt
 > mua/không, máy chủ **tự động đặt lệnh và giám sát thị trường**.
 
+📄 **[Báo cáo cách hoạt động của mô hình](docs/BAO-CAO-CACH-HOAT-DONG.md)** — giải
+thích hệ thống dựa vào yếu tố nào để quyết định giao dịch, kiến trúc triển khai máy
+ảo (máy chủ ở đâu, máy con ở đâu, vì sao không thấy cửa sổ VMware), và những hạn
+chế đã biết. **Đọc tài liệu này trước** nếu bạn cần hiểu tổng thể.
+
 ---
 
 ## 1. Tổng quan
