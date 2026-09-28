@@ -11,10 +11,31 @@ Group=__FINAGENT_USER__
 WorkingDirectory=__FINAGENT_DIR__
 Environment="PYTHONUNBUFFERED=1"
 Environment="FINAGENT_WORKER_NAME=__WORKER_NAME__"
+# Giá trị mặc định, để dòng ExecStart bên dưới luôn có gì đó thay vào kể cả khi
+# .env thiếu. EnvironmentFile khai báo SAU nên .env sẽ ghi đè khi có.
+Environment="FINAGENT_LOG_LEVEL=INFO"
+Environment="FINAGENT_WORKER_CONCURRENCY=4"
+Environment="FINAGENT_CRAWL_QUEUE=crawl"
 EnvironmentFile=-__FINAGENT_DIR__/.env
 
-# May con chi lang nghe hang doi Redis va thu thap du lieu.
-ExecStart=__FINAGENT_DIR__/.venv/bin/finagent worker --name __WORKER_NAME__
+# Gọi thẳng celery thay vì qua lệnh `finagent worker`.
+#
+# Lý do: gói máy con chỉ chứa phần thu thập dữ liệu, KHÔNG chứa `finagent/cli.py`
+# (tệp đó kéo theo bot Telegram, bộ lập lịch và cả khung đa tác nhân — đúng những
+# thứ máy con không cần). Nên lệnh `finagent` không tồn tại trên máy con và dịch vụ
+# sẽ chết ngay khi khởi động.
+#
+# Lệnh dưới đây tương đương đúng những gì `finagent worker` làm: đặt log level,
+# số tiến trình con, hàng đợi và tên máy con.
+#
+# ``%H`` là HOSTNAME. Không dùng ``%h``: trong systemd ``%h`` là thư mục home của
+# tài khoản chạy dịch vụ, nên tên node sẽ thành ``may-con@/root`` thay vì
+# ``may-con@ten-may`` — đã mắc đúng lỗi này.
+ExecStart=__FINAGENT_DIR__/.venv/bin/celery -A finagent.celery_app worker \
+    --loglevel=${FINAGENT_LOG_LEVEL} \
+    --concurrency=${FINAGENT_WORKER_CONCURRENCY} \
+    -Q ${FINAGENT_CRAWL_QUEUE} \
+    -n __WORKER_NAME__@%H
 
 Restart=always
 RestartSec=10
