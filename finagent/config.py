@@ -216,6 +216,25 @@ class Settings:
     #: thay vì làm lại từ đầu. Rất đáng bật vì mỗi lượt phân tích tốn vài phút.
     checkpoint_enabled: bool = field(default_factory=lambda: _env_bool("FINAGENT_CHECKPOINT", True))
 
+    # --- Tốc độ quét thị trường --------------------------------------------
+    #: Lọc trước bằng mô hình ML rẻ tiền trước khi gọi LLM đắt tiền.
+    #:
+    #: Một lượt phân tích đầy đủ 12 tác nhân tốn khoảng 13 phút cho MỘT mã. Quét
+    #: cả 7 mã tuần tự mất hơn một tiếng rưỡi — quá chậm để dùng thật, và tốn hạn
+    #: mức API vô ích cho những mã đang ở vùng trung tính.
+    #:
+    #: Bật cờ này thì hệ thống chạy mô hình ML trước (vài mili giây). Chỉ gọi LLM
+    #: khi tín hiệu ML ra khỏi vùng trung tính, HOẶC khi đang giữ vị thế mã đó —
+    #: vì lúc đang có tiền trong mã thì luôn cần phân tích kỹ để biết khi nào thoát.
+    llm_prefilter: bool = field(default_factory=lambda: _env_bool("FINAGENT_LLM_PREFILTER", True))
+    #: Số mã phân tích LLM chạy song song. Các lời gọi này chờ mạng là chính nên
+    #: chạy song song cho tốc độ gần như nhân lên theo số luồng.
+    #: Để 1 nếu muốn chạy tuần tự như cũ.
+    scan_parallelism: int = field(default_factory=lambda: _env_int("FINAGENT_SCAN_PARALLELISM", 3))
+    #: Vùng trung tính của ML: xác suất trong khoảng này coi như không có tín hiệu.
+    #: Khớp với ngưỡng trong ``combine_signals``.
+    ml_neutral_band: float = field(default_factory=lambda: _env_float("FINAGENT_ML_NEUTRAL_BAND", 0.05))
+
     # --- Độ sâu suy luận ---------------------------------------------------
     #: Số vòng tranh luận giữa bò và gấu. Nhiều vòng hơn = soi kỹ hơn, nhưng tốn
     #: thời gian và hạn mức API gấp bội.
@@ -267,7 +286,11 @@ class Settings:
     vn_symbols: list[str] = field(default_factory=lambda: _env_list("FINAGENT_VN_SYMBOLS", DEFAULT_VN_SYMBOLS))
     gold_symbols: list[str] = field(default_factory=lambda: _env_list("FINAGENT_GOLD_SYMBOLS", DEFAULT_GOLD_SYMBOLS))
     #: Chu kỳ quét thị trường (giây) của bộ giám sát.
-    monitor_interval: int = field(default_factory=lambda: _env_int("FINAGENT_MONITOR_INTERVAL", 300))
+    #: Nhịp quét thị trường. Phải dài hơn thời gian một lượt quét, nếu không bộ lập
+    #: lịch sẽ thử khởi động lượt mới khi lượt cũ chưa xong và ghi cảnh báo liên tục.
+    #: Sau khi lọc trước bằng ML và chạy song song, một lượt quét mất khoảng 25–30
+    #: phút cho 4–7 mã, nên để 1800 giây.
+    monitor_interval: int = field(default_factory=lambda: _env_int("FINAGENT_MONITOR_INTERVAL", 1800))
     #: Chu kỳ thu thập tin tức (giây).
     news_interval: int = field(default_factory=lambda: _env_int("FINAGENT_NEWS_INTERVAL", 900))
     #: Chặn trên số bài viết lấy về mỗi nguồn mỗi lượt, tránh ngốn tài nguyên.

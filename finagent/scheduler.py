@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from finagent import storage
 from finagent.celery_app import cluster_status, dispatch
@@ -130,6 +131,85 @@ def collect_once(timeout: int = RESULT_TIMEOUT) -> dict:
 # Bước 4: ra quyết định
 # ---------------------------------------------------------------------------
 
+def _safe_analyse(symbol: str, run_llm: bool):
+    """Phân tích một mã, không để lỗi của mã này chặn các mã khác.
+
+    Chạy được trong luồng riêng: chỉ đọc cơ sở dữ liệu rồi gọi mạng, không giữ
+    trạng thái dùng chung. Việc ghi vào cơ sở dữ liệu do luồng chính làm sau.
+    """
+    try:
+        return engine.build_proposal(symbol, run_llm=run_llm)
+    except Exception:  # noqa: BLE001 - một mã lỗi không chặn các mã khác
+        logger.exception("Lỗi khi phân tích %s", symbol)
+        return None
+
+
+def _prefilter_symbols(symbols: list[str]) -> list[str]:
+    """Chỉ giữ lại những mã đáng bỏ ra 13 phút chạy LLM.
+
+    Một lượt phân tích đầy đủ tốn khoảng 13 phút và một lượng hạn mức API đáng kể.
+    Chạy cho cả 7 mã một cách mù quáng là lãng phí phần lớn thời gian, vì phần lớn
+    mã đang ở vùng trung tính và kết luận sẽ là "đứng ngoài" dù phân tích kỹ thế nào.
+
+    Giữ lại mã khi thoả **một trong hai**:
+
+    1. **Tín hiệu ML ra khỏi vùng trung tính** — có gì đó đáng xem.
+    2. **Đang giữ vị thế ở mã đó** — lúc này luôn cần phân tích kỹ, vì câu hỏi
+       không còn là "có nên vào không" mà là "có nên thoát không". Bỏ qua mã đang
+       giữ tiền là rủi ro thật, không phải tiết kiệm.
+
+    Nếu không lọc được mã nào (ví dụ chưa có dữ liệu giá), trả về **toàn bộ** danh
+    sách — thà chậm còn hơn bỏ sót.
+    """
+    from finagent.broker import get_broker
+    from finagent.decision import ml_model, vendor
+
+    band = settings.ml_neutral_band
+    kept: list[str] = []
+    skipped: list[str] = []
+
+    try:
+        broker = get_broker()
+        held = {position["symbol"] for position in broker.list_positions()}
+    except Exception as exc:  # noqa: BLE001 - không biết đang giữ gì thì phân tích hết
+        logger.warning("Không đọc được vị thế để lọc trước: %s — phân tích toàn bộ.", exc)
+        return symbols
+
+    for symbol in symbols:
+        if symbol.upper() in {s.upper() for s in held}:
+            kept.append(symbol)
+            continue
+
+        try:
+            history = vendor.daily_history(symbol, days=400)
+            result = ml_model.predict_from_history(history)
+        except Exception as exc:  # noqa: BLE001 - không chạy được ML thì cứ phân tích
+            logger.debug("Lọc trước %s: không chạy được ML (%s) — vẫn phân tích.", symbol, exc)
+            kept.append(symbol)
+            continue
+
+        if not result.get("available"):
+            kept.append(symbol)
+            continue
+
+        probability = float(result.get("probability", 0.5))
+        if abs(probability - 0.5) >= band:
+            kept.append(symbol)
+        else:
+            skipped.append(symbol)
+
+    if not kept:
+        logger.info("Lọc trước: không mã nào vượt vùng trung tính — phân tích toàn bộ để chắc chắn.")
+        return symbols
+
+    logger.info(
+        "Lọc trước bằng ML: phân tích %d/%d mã (%s). Bỏ qua %d mã trung tính: %s",
+        len(kept), len(symbols), ", ".join(kept), len(skipped),
+        ", ".join(skipped) if skipped else "không có",
+    )
+    return kept
+
+
 def scan_market(run_llm: bool = True, notify: bool = True) -> int:
     """Phân tích các mã đang theo dõi và gửi đề xuất cần duyệt qua Telegram.
 
@@ -140,14 +220,31 @@ def scan_market(run_llm: bool = True, notify: bool = True) -> int:
 
     notifier = TelegramNotifier() if notify else None
     sent = 0
+    started = time.monotonic()
 
-    for symbol in symbols:
-        try:
-            proposal = engine.build_proposal(symbol, run_llm=run_llm)
-        except Exception:  # noqa: BLE001 - một mã lỗi không chặn các mã khác
-            logger.exception("Lỗi khi phân tích %s", symbol)
-            continue
+    # Lọc trước bằng ML rẻ tiền để khỏi tốn 13 phút LLM cho mã đang ở vùng trung tính.
+    if run_llm and settings.llm_prefilter:
+        symbols = _prefilter_symbols(symbols)
 
+    # Mỗi mã là một lượt phân tích đầy đủ 12 tác nhân, tốn khoảng 13 phút. Chạy
+    # tuần tự cả 7 mã mất hơn một tiếng rưỡi. Các lời gọi này chờ mạng là chính nên
+    # chạy song song cho tốc độ gần như nhân lên theo số luồng.
+    parallelism = max(1, settings.scan_parallelism) if run_llm else 1
+
+    if parallelism > 1 and len(symbols) > 1:
+        logger.info(
+            "Quét %d mã, chạy song song %d luồng.", len(symbols), parallelism
+        )
+        with ThreadPoolExecutor(max_workers=parallelism) as pool:
+            analysed = list(pool.map(lambda s: _safe_analyse(s, run_llm), symbols))
+    else:
+        analysed = [_safe_analyse(symbol, run_llm) for symbol in symbols]
+
+    logger.info(
+        "Đã phân tích %d mã trong %.1f phút.", len(symbols), (time.monotonic() - started) / 60
+    )
+
+    for proposal in analysed:
         if proposal is None:
             continue
 
@@ -226,19 +323,33 @@ def run_cycle(run_llm: bool = True) -> dict:
 
 def run_scheduler() -> None:
     """Chạy bộ giám sát định kỳ cho tới khi bị dừng."""
+    from datetime import datetime, timedelta
+
     from apscheduler.schedulers.blocking import BlockingScheduler
 
     scheduler = BlockingScheduler(timezone="Asia/Ho_Chi_Minh")
+
+    # Chạy ngay lượt đầu thay vì chờ hết một chu kỳ.
+    #
+    # ``add_job`` kiểu ``interval`` mặc định chờ hết chu kỳ đầu mới chạy lần đầu.
+    # Với nhịp quét 30 phút, khởi động lại dịch vụ là phải ngồi chờ nửa tiếng mới
+    # thấy kết quả — người dùng không phân biệt được là đang chờ hay đã hỏng.
+    #
+    # Thu thập chạy sau 10 giây, quét chạy sau 2 phút: phải có dữ liệu giá và tin
+    # tức trong kho trước thì quét mới có ý nghĩa.
+    now = datetime.now()
 
     # Thu thập tin tức thường xuyên hơn vì tin tức thay đổi liên tục.
     scheduler.add_job(
         collect_once, "interval", seconds=settings.news_interval,
         id="collect", name="Thu thập dữ liệu từ máy con", max_instances=1, coalesce=True,
+        next_run_time=now + timedelta(seconds=10),
     )
     # Quét thị trường và ra quyết định theo nhịp chậm hơn (tốn token LLM).
     scheduler.add_job(
         lambda: scan_market(run_llm=True), "interval", seconds=settings.monitor_interval,
         id="scan", name="Quét thị trường và ra quyết định", max_instances=1, coalesce=True,
+        next_run_time=now + timedelta(seconds=120),
     )
     scheduler.add_job(
         expire_stale_proposals, "interval", seconds=300,

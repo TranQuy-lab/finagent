@@ -399,3 +399,165 @@ class TestLlmProvider:
 
         # Không đặt thì TradingAgents dùng None = không giới hạn.
         assert all(line.split("=", 1)[1].strip() == "" for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# Tốc độ quét thị trường
+# ---------------------------------------------------------------------------
+
+class TestScanSpeed:
+    """Quét tuần tự 7 mã hết hơn một tiếng rưỡi — quá chậm để dùng thật.
+
+    Nhóm test này khoá lại hai cơ chế tăng tốc: lọc trước bằng ML, và chạy song song.
+    """
+
+    def test_loc_truoc_bo_ma_trung_tinh(self, temp_db, monkeypatch):
+        from finagent import scheduler
+        from finagent.config import settings
+        from finagent.decision import ml_model, vendor
+
+        monkeypatch.setattr(settings, "ml_neutral_band", 0.05, raising=False)
+        monkeypatch.setattr(vendor, "daily_history", lambda symbol, days=400: [{"price": 1.0}])
+        # Nửa mã có tín hiệu mạnh, nửa còn lại trung tính.
+        probabilities = {"FPT": 0.80, "HPG": 0.50, "VCB": 0.20}
+        monkeypatch.setattr(
+            ml_model, "predict_from_history",
+            lambda history: {"available": True, "probability": probabilities.pop("__next__", 0.5)}
+            if False else {"available": True, "probability": 0.5},
+        )
+
+        # Dùng hàm giả để trả xác suất theo từng mã một cách xác định.
+        calls = iter([0.80, 0.50, 0.20])
+        monkeypatch.setattr(
+            ml_model, "predict_from_history",
+            lambda history: {"available": True, "probability": next(calls)},
+        )
+
+        import finagent.broker as broker_module
+
+        class _NoPositions:
+            def list_positions(self):
+                return []
+
+        monkeypatch.setattr(broker_module, "get_broker", lambda: _NoPositions())
+
+        kept = scheduler._prefilter_symbols(["FPT", "HPG", "VCB"])
+
+        assert kept == ["FPT", "VCB"], "mã trung tính (0,50) phải bị bỏ qua"
+
+    def test_luon_giu_ma_dang_giu_vi_the(self, temp_db, monkeypatch):
+        """Đang giữ tiền trong một mã thì phải phân tích kỹ, không được lọc bỏ.
+
+        Bỏ qua mã đang giữ vị thế là rủi ro thật: câu hỏi không còn là 'có nên vào
+        không' mà là 'có nên thoát không'.
+        """
+        from finagent import scheduler
+        from finagent.config import settings
+        from finagent.decision import ml_model, vendor
+
+        monkeypatch.setattr(settings, "ml_neutral_band", 0.05, raising=False)
+        monkeypatch.setattr(vendor, "daily_history", lambda symbol, days=400: [{"price": 1.0}])
+        # HPG trung tính hoàn toàn, nhưng đang giữ vị thế.
+        monkeypatch.setattr(
+            ml_model, "predict_from_history",
+            lambda history: {"available": True, "probability": 0.50},
+        )
+
+        import finagent.broker as broker_module
+
+        class _Holding:
+            def list_positions(self):
+                return [{"symbol": "HPG", "quantity": 100, "avg_price": 20_000.0}]
+
+        monkeypatch.setattr(broker_module, "get_broker", lambda: _Holding())
+
+        kept = scheduler._prefilter_symbols(["FPT", "HPG"])
+
+        assert "HPG" in kept, "mã đang giữ vị thế không được bị lọc bỏ"
+
+    def test_loc_het_thi_phan_tich_toan_bo(self, temp_db, monkeypatch):
+        """Thà chậm còn hơn bỏ sót: không giữ lại được mã nào thì phân tích hết."""
+        from finagent import scheduler
+        from finagent.config import settings
+        from finagent.decision import ml_model, vendor
+
+        monkeypatch.setattr(settings, "ml_neutral_band", 0.05, raising=False)
+        monkeypatch.setattr(vendor, "daily_history", lambda symbol, days=400: [{"price": 1.0}])
+        monkeypatch.setattr(
+            ml_model, "predict_from_history",
+            lambda history: {"available": True, "probability": 0.50},
+        )
+
+        import finagent.broker as broker_module
+
+        class _NoPositions:
+            def list_positions(self):
+                return []
+
+        monkeypatch.setattr(broker_module, "get_broker", lambda: _NoPositions())
+
+        symbols = ["FPT", "HPG"]
+
+        assert scheduler._prefilter_symbols(symbols) == symbols
+
+    def test_khong_doc_duoc_vi_the_thi_phan_tich_het(self, temp_db, monkeypatch):
+        """Không biết đang giữ gì thì phải phân tích tất, không được đoán bừa."""
+        from finagent import scheduler
+
+        import finagent.broker as broker_module
+
+        def boom():
+            raise RuntimeError("broker hỏng")
+
+        monkeypatch.setattr(broker_module, "get_broker", boom)
+        symbols = ["FPT", "HPG"]
+
+        assert scheduler._prefilter_symbols(symbols) == symbols
+
+    def test_ml_khong_chay_duoc_thi_van_phan_tich(self, temp_db, monkeypatch):
+        from finagent import scheduler
+        from finagent.decision import vendor
+
+        monkeypatch.setattr(
+            vendor, "daily_history",
+            lambda symbol, days=400: (_ for _ in ()).throw(RuntimeError("hết dữ liệu")),
+        )
+
+        import finagent.broker as broker_module
+
+        class _NoPositions:
+            def list_positions(self):
+                return []
+
+        monkeypatch.setattr(broker_module, "get_broker", lambda: _NoPositions())
+
+        symbols = ["FPT"]
+
+        assert scheduler._prefilter_symbols(symbols) == symbols
+
+    def test_analyze_loi_thi_tra_ve_none_chu_khong_nem(self, temp_db, monkeypatch):
+        from finagent import scheduler
+        from finagent.decision import engine
+
+        monkeypatch.setattr(
+            engine, "build_proposal",
+            lambda symbol, run_llm=True: (_ for _ in ()).throw(RuntimeError("sập")),
+        )
+
+        assert scheduler._safe_analyse("FPT", True) is None
+
+    def test_nhip_quet_dai_hon_thoi_gian_quet(self):
+        """Nhịp quét phải dài hơn một lượt quét, nếu không bộ lập lịch chạy chồng."""
+        from finagent.config import settings
+
+        assert settings.monitor_interval >= 900, (
+            "một lượt quét tốn hàng chục phút; nhịp quá ngắn sẽ khiến bộ lập lịch "
+            "thử chạy chồng và ghi cảnh báo liên tục"
+        )
+
+    def test_cac_tham_so_toc_do_co_that(self):
+        from finagent.config import settings
+
+        assert hasattr(settings, "llm_prefilter")
+        assert hasattr(settings, "scan_parallelism")
+        assert settings.scan_parallelism >= 1
