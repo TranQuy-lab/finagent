@@ -86,7 +86,9 @@ else
     warn "Không thấy vendor/TradingAgents — hệ thống có thể không chạy đúng."
 fi
 
-./.venv/bin/pip install --quiet -e .
+# Nhóm [server] gồm cả [worker] (vì máy chủ cũng chạy một worker), cộng thêm
+# Telegram, pandas và APScheduler.
+./.venv/bin/pip install --quiet -e ".[server]"
 log "    Đã cài xong gói finagent"
 
 log "6/8 — Chuẩn bị file cấu hình .env"

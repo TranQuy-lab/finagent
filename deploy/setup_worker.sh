@@ -1,12 +1,22 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  FinAgent — cài đặt MÁY CON trên Ubuntu Server 24.04 LTS
+#  FinAgent — cài đặt MÁY CON (client) trên Ubuntu Server 24.04 LTS
 #
-#  Biến một máy ảo Ubuntu Server sạch thành máy con: chỉ cài Python và chạy
-#  tiến trình lắng nghe hàng đợi Redis của máy chủ để thu thập dữ liệu.
+#  Biến một máy Ubuntu sạch thành máy con: chỉ cài Python và chạy tiến trình
+#  lắng nghe hàng đợi Redis của máy chủ để thu thập dữ liệu.
 #
-#  Cách dùng (trên máy con, quyền root):
-#      sudo REDIS_HOST=192.168.1.100 bash deploy/setup_worker.sh
+#  Máy con CỐ Ý không cài khung đa tác nhân TradingAgents, phần ra quyết định,
+#  broker hay bot Telegram — những thứ đó chỉ máy chủ dùng. Nhờ vậy máy con nhẹ
+#  hơn nhiều và cài nhanh hơn, phù hợp máy ảo ít tài nguyên.
+#
+#  Cách dùng:
+#
+#    Từ kho mã nguồn đầy đủ:
+#        sudo REDIS_HOST=192.168.1.100 bash deploy/setup_worker.sh
+#
+#    Từ gói máy con đã đóng sẵn (xem deploy/make_worker_bundle.sh):
+#        tar xzf finagent-worker-*.tar.gz && cd finagent-worker-*
+#        sudo REDIS_HOST=192.168.1.100 bash install.sh
 #
 #  Biến môi trường:
 #      REDIS_HOST=...        IP máy chủ (BẮT BUỘC, trừ khi đã có .env)
@@ -14,6 +24,7 @@
 #      WORKER_NAME=...       tên máy con (mặc định: hostname)
 #      FINAGENT_DIR=...      thư mục cài đặt
 #      FINAGENT_USER=...     tài khoản chạy dịch vụ
+#      FINAGENT_PREBUILT=1   đang chạy từ gói đã đóng sẵn, chép thẳng không rsync
 # =============================================================================
 set -euo pipefail
 
@@ -62,29 +73,36 @@ fi
 log "4/6 — Tạo tài khoản '$FINAGENT_USER' và sao chép mã nguồn"
 id -u "$FINAGENT_USER" >/dev/null 2>&1 || useradd --system --create-home --shell /bin/bash "$FINAGENT_USER"
 mkdir -p "$FINAGENT_DIR"
-rsync -a --delete \
-    --exclude '.venv' --exclude 'data' --exclude '__pycache__' \
-    --exclude '*.pyc' --exclude '.git' \
-    "$SOURCE_DIR/" "$FINAGENT_DIR/" 2>/dev/null \
-  || cp -r "$SOURCE_DIR/." "$FINAGENT_DIR/"
+
+if [[ "${FINAGENT_PREBUILT:-0}" == "1" ]]; then
+    # Gói đã đóng sẵn chỉ chứa phần máy con, nên chép thẳng là xong.
+    log "    Chế độ gói đóng sẵn — chỉ chứa phần máy con"
+    cp -r "$SOURCE_DIR/." "$FINAGENT_DIR/"
+else
+    rsync -a --delete \
+        --exclude '.venv' --exclude 'data' --exclude '__pycache__' \
+        --exclude '*.pyc' --exclude '.git' \
+        "$SOURCE_DIR/" "$FINAGENT_DIR/" 2>/dev/null \
+      || cp -r "$SOURCE_DIR/." "$FINAGENT_DIR/"
+fi
 
 log "5/6 — Cài môi trường Python"
 cd "$FINAGENT_DIR"
 python3 -m venv .venv
 ./.venv/bin/pip install --quiet --upgrade pip
 
-# Cài bản TradingAgents đã kiểm thử nằm trong dự án TRƯỚC.
-# Không được để pip tự lấy "tradingagents" từ PyPI: gói cùng tên ở đó là phiên
-# bản khác, sẽ làm hỏng các bản vá dữ liệu Việt Nam trong finagent/decision/vendor.py.
-if [[ -d vendor/TradingAgents ]]; then
-    ./.venv/bin/pip install --quiet -e vendor/TradingAgents
-    log "    Đã cài TradingAgents (bản trong dự án)"
-else
-    warn "Không thấy vendor/TradingAgents — hệ thống có thể không chạy đúng."
-fi
-
-./.venv/bin/pip install --quiet -e .
-log "    Đã cài xong gói finagent"
+# CHỈ cài nhóm [worker]: celery, redis, requests, feedparser, beautifulsoup4.
+#
+# Cố ý KHÔNG cài:
+#   - vendor/TradingAgents (khung đa tác nhân) — máy con không ra quyết định,
+#     và gói này kéo theo langchain, langgraph, rất nặng.
+#   - nhóm [server]: Telegram, pandas, APScheduler.
+#
+# KHÔNG cài "tradingagents" từ PyPI: gói cùng tên ở đó là phiên bản khác và sẽ
+# làm hỏng các bản vá dữ liệu Việt Nam (chỉ ảnh hưởng máy chủ, nhưng cài nhầm
+# vào máy con cũng vô nghĩa).
+./.venv/bin/pip install --quiet -e ".[worker]"
+log "    Đã cài xong gói finagent (nhóm worker)"
 
 log "6/6 — Ghi cấu hình và cài dịch vụ"
 mkdir -p "$FINAGENT_DIR/data"

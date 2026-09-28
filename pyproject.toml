@@ -9,33 +9,47 @@ description = "Hệ thống đa tác nhân: máy chủ điều phối máy con t
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    # LƯU Ý: khung đa tác nhân TradingAgents KHÔNG khai báo ở đây.
+    # Chỉ để chạy được ở mức tối thiểu: đọc file .env.
     #
-    # Trên PyPI có gói tên "tradingagents" nhưng ở phiên bản khác (0.7.x) so với
-    # bản đã kiểm thử và vá trong đồ án này (0.5.1). Cài từ PyPI sẽ lấy sai phiên
-    # bản và làm hỏng các bản vá trong finagent/decision/vendor.py.
+    # Mọi thứ còn lại nằm trong nhóm tuỳ chọn bên dưới, vì máy con và máy chủ cần
+    # hai tập phụ thuộc rất khác nhau. Máy con chỉ cào dữ liệu nên không cần
+    # Telegram, pandas hay khung đa tác nhân — cài thừa chỉ tốn dung lượng và thời
+    # gian, mà máy con thì thường có ít tài nguyên.
     #
-    # Bản đã kiểm thử nằm tại vendor/TradingAgents và được cài riêng:
-    #     pip install -e vendor/TradingAgents
-    # Các script trong deploy/ đã làm sẵn bước này.
-    #
-    # Lớp phân tán máy chủ ↔ máy con
-    "celery[redis]>=5.4",
-    "redis>=5.0",
-    # Giao tiếp người dùng
-    "python-telegram-bot>=21.0",
-    # Thu thập dữ liệu
-    "requests>=2.32",
-    "feedparser>=6.0",
-    "beautifulsoup4>=4.12",
-    "pandas>=2.3.0",
-    # Hạ tầng
+    #   Máy chủ : pip install -e ".[server]"
+    #   Máy con : pip install -e ".[worker]"
     "python-dotenv>=1.0",
-    "APScheduler>=3.10",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-cov>=5.0"]
+# --- Máy con (client): chỉ thu thập dữ liệu và gửi về máy chủ ---
+worker = [
+    "celery[redis]>=5.4",
+    "redis>=5.0",
+    "requests>=2.32",
+    "feedparser>=6.0",
+    "beautifulsoup4>=4.12",
+]
+
+# --- Máy chủ: thêm giao tiếp người dùng, lưu trữ, và mô hình ML ---
+server = [
+    "finagent[worker]",
+    "python-telegram-bot>=21.0",
+    "pandas>=2.3.0",
+    "APScheduler>=3.10",
+]
+
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "finagent[server]"]
+
+# LƯU Ý: khung đa tác nhân TradingAgents KHÔNG khai báo ở đây.
+#
+# Trên PyPI có gói tên "tradingagents" nhưng ở phiên bản khác (0.7.x) so với bản
+# đã kiểm thử và vá trong đồ án này (0.5.1). Cài từ PyPI sẽ lấy sai phiên bản và
+# làm hỏng các bản vá trong finagent/decision/vendor.py.
+#
+# Bản đã kiểm thử nằm tại vendor/TradingAgents và chỉ MÁY CHỦ cần cài:
+#     pip install -e ".[server]" && pip install -e vendor/TradingAgents
+# Script deploy/setup_server.sh đã làm sẵn bước này.
 
 [project.scripts]
 finagent = "finagent.cli:main"

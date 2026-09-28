@@ -33,6 +33,56 @@ from finagent.broker.binance import (  # noqa: E402
 pytestmark = pytest.mark.integration
 
 
+def _seed_price_history(symbol: str, count: int = 80, start: float = 40_000.0,
+                        step: float = 1.004) -> None:
+    """Gieo một chuỗi giá tăng dần để mô hình ML có đủ mẫu.
+
+    Chuỗi tăng đều để mô hình chắc chắn nghiêng về tín hiệu mua — bài test quan tâm
+    tới khối lượng lệnh, không quan tâm mô hình đoán đúng hay sai.
+    """
+    import datetime as _dt
+
+    from finagent import storage
+
+    base = _dt.datetime(2026, 6, 1, tzinfo=_dt.timezone.utc)
+    price = start
+    rows = []
+    for offset in range(count):
+        price *= step
+        rows.append({
+            "symbol": symbol,
+            "asset_class": "crypto",
+            "price": round(price, 2),
+            "currency": "USDT",
+            "change_pct_24h": 0.4,
+            "volume": 1000.0 + offset,
+            "source": "test",
+            "captured_at": (base + _dt.timedelta(days=offset)).isoformat(),
+        })
+    storage.save_prices(rows)
+
+
+def _rising_history(count: int = 90, start: float = 40_000.0, step: float = 1.004) -> list[dict]:
+    """Chuỗi nến tăng đều, dùng thay cho dữ liệu mạng trong test.
+
+    Tăng đều để mô hình ML chắc chắn nghiêng về tín hiệu mua — bài test quan tâm
+    tới khối lượng lệnh, không quan tâm mô hình đoán đúng hay sai.
+    """
+    import datetime as _dt
+
+    base = _dt.datetime(2026, 6, 1, tzinfo=_dt.timezone.utc)
+    price = start
+    rows = []
+    for offset in range(count):
+        price *= step
+        rows.append({
+            "date": (base + _dt.timedelta(days=offset)).strftime("%Y-%m-%d"),
+            "price": round(price, 2),
+            "volume": 1000.0 + offset,
+        })
+    return rows
+
+
 @pytest.fixture()
 def exchange(temp_db):
     """Sàn giả lập + broker trỏ vào đó, dùng chung một cơ sở dữ liệu tạm."""
@@ -518,13 +568,65 @@ class TestEngineIntegration:
         assert result["ok"] is False
         assert "insufficient" in result["message"]
 
-    def test_doc_so_du_tu_san_trong_de_xuat(self, live_setup):
-        from finagent.decision import engine
+    def test_doc_so_du_tu_san_trong_de_xuat(self, live_setup, monkeypatch):
+        """Khối lượng lệnh phải tính từ số dư THẬT trên sàn, không phải số cấu hình.
 
-        # Ví USDT trên sàn có 10.000 → engine phải đọc được con số đó.
+        Bài test này từng phụ thuộc mạng: ``analyze_ml`` lấy lịch sử giá từ API
+        Binance thật, nên kết quả đổi theo dữ liệu thị trường tại thời điểm chạy và
+        theo việc máy có mạng hay không — chạy cả bộ thì đạt, chạy riêng thì đổ.
+        Nay chặn nguồn dữ liệu đó bằng một chuỗi giá tăng đều để kết quả xác định.
+        """
+        from finagent.decision import engine
+        from finagent.decision import vendor as vendor_module
+
+        monkeypatch.setattr(
+            vendor_module, "daily_history",
+            lambda symbol, days=400: _rising_history(90),
+        )
+
         proposal = engine.build_proposal("BTCUSDT", run_llm=False)
 
         assert proposal is not None
+        assert proposal.action == "buy", "chuỗi giá tăng đều phải cho tín hiệu mua"
         assert proposal.currency == "USDT"
-        # 10% của 10.000 USDT = 1.000 USDT ≈ 0.012 BTC ở giá 83.000
-        assert proposal.quantity == pytest.approx(0.012, abs=0.001)
+        # Ví USDT trên sàn giả lập có 10.000, giá 83.000.
+        # Ngân sách = min(10.000 × 10%, tiền mặt × 98%) = 1.000 USDT
+        assert proposal.quantity == pytest.approx(1_000 / 83_000, rel=0.02)
+
+    def test_khoi_luong_bam_theo_so_du_san(self, live_setup, monkeypatch):
+        """Đổi số dư trên sàn thì khối lượng phải đổi theo — chứng minh engine đọc
+        số dư thật chứ không dùng hằng số nào."""
+        from finagent.decision import engine
+        from finagent.decision import vendor as vendor_module
+
+        monkeypatch.setattr(
+            vendor_module, "daily_history",
+            lambda symbol, days=400: _rising_history(90),
+        )
+        live_setup.state.balances["USDT"] = 50_000.0
+
+        proposal = engine.build_proposal("BTCUSDT", run_llm=False)
+
+        # 10% của 50.000 = 5.000 USDT
+        assert proposal.quantity == pytest.approx(5_000 / 83_000, rel=0.02)
+
+
+def _rising_history(count: int = 90, start: float = 40_000.0, step: float = 1.004) -> list[dict]:
+    """Chuỗi nến tăng đều, dùng thay cho dữ liệu mạng trong test.
+
+    Tăng đều để mô hình ML chắc chắn nghiêng về tín hiệu mua — bài test quan tâm
+    tới khối lượng lệnh, không quan tâm mô hình đoán đúng hay sai.
+    """
+    import datetime as _dt
+
+    base = _dt.datetime(2026, 6, 1, tzinfo=_dt.timezone.utc)
+    price = start
+    rows = []
+    for offset in range(count):
+        price *= step
+        rows.append({
+            "date": (base + _dt.timedelta(days=offset)).strftime("%Y-%m-%d"),
+            "price": round(price, 2),
+            "volume": 1000.0 + offset,
+        })
+    return rows

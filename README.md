@@ -131,29 +131,71 @@ finagent/
 
 ## 4. Cài đặt
 
-### 4.1. Vì sao TradingAgents nằm trong `vendor/`
+Hệ thống có **hai tập phụ thuộc khác nhau**, vì máy con và máy chủ làm hai việc
+khác hẳn nhau:
+
+| | Máy chủ | Máy con (client) |
+|---|---|---|
+| Cài bằng | `pip install -e ".[server]"` | `pip install -e ".[worker]"` |
+| TradingAgents | ✅ cần (khung đa tác nhân) | ❌ **không cần** |
+| Telegram, pandas, APScheduler | ✅ | ❌ |
+| Mã nguồn | toàn bộ | 6 tệp + thư mục `collectors/` |
+| Kích thước gói | 8,5 MB | **32 KB** |
+
+Máy con chỉ cào dữ liệu rồi gửi về máy chủ, nên không cần khung đa tác nhân, phần
+ra quyết định, broker hay bot Telegram. Cài thừa chỉ tốn dung lượng và thời gian —
+mà máy con thường là máy ảo ít tài nguyên.
+
+### 4.1. Đóng gói máy con để cài lên nhiều máy
+
+```bash
+bash deploy/make_worker_bundle.sh
+# → dist/finagent-worker-0.1.0-<ngày>.tar.gz   (32 KB, 20 tệp)
+```
+
+Cài lên một máy mới:
+
+```bash
+scp dist/finagent-worker-*.tar.gz user@<ip-máy-mới>:/tmp/
+ssh user@<ip-máy-mới>
+tar xzf /tmp/finagent-worker-*.tar.gz
+cd finagent-worker-0.1.0
+sudo REDIS_HOST=<ip-máy-chủ> bash install.sh
+```
+
+Script tự cài Python, tạo tài khoản dịch vụ, ghi `.env`, đăng ký systemd và khởi
+động máy con. Xong thì trên máy chủ chạy `finagent status` sẽ thấy máy mới.
+
+**Thêm bao nhiêu máy con cũng được** — chỉ cần chạy lại đúng một lệnh trên mỗi máy.
+Máy chủ tự phát hiện và chia việc.
+
+> Đã kiểm chứng: gói 32 KB cài trong môi trường Python sạch, kết nối tới máy chủ
+> thật, nạp đủ 5 tác vụ và đăng ký thành công. Gói **không** kéo theo telegram,
+> pandas, langchain, langgraph hay numpy.
+
+### 4.2. Vì sao TradingAgents nằm trong `vendor/`
 
 PyPI **có** gói tên `tradingagents`, nhưng ở đó là phiên bản khác (0.7.x) so với bản
 đồ án này đã kiểm thử và vá (0.5.1). Nếu để pip tự lấy từ PyPI, các bản vá dữ liệu
 Việt Nam trong `finagent/decision/vendor.py` sẽ không khớp và hỏng âm thầm.
 
-Vì vậy bản đã kiểm thử nằm ngay trong dự án và được cài riêng:
+Vì vậy bản đã kiểm thử nằm ngay trong dự án và **chỉ máy chủ** cài:
 
 ```bash
-pip install -e vendor/TradingAgents    # PHẢI cài trước
-pip install -e .                       # rồi mới cài FinAgent
+pip install -e ".[server]"
+pip install -e vendor/TradingAgents
 ```
 
 Các script trong `deploy/` đã làm sẵn đúng thứ tự này. Khi chạy, hệ thống còn tự
 kiểm tra phiên bản và cảnh báo nếu không khớp.
 
-### 4.2. Cài nhanh trên một máy (để thử)
+### 4.3. Cài nhanh trên một máy (để thử)
 
 ```bash
 # 1) Môi trường Python
 python3 -m venv .venv
+.venv/bin/pip install -e ".[server]"
 .venv/bin/pip install -e vendor/TradingAgents
-.venv/bin/pip install -e .
 
 # 2) Cấu hình
 cp .env.example .env
