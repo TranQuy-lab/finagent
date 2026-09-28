@@ -101,12 +101,25 @@ fi
 log "7/8 — Cài dịch vụ systemd"
 install -m 644 "$FINAGENT_DIR/deploy/finagent-server.service" /etc/systemd/system/
 install -m 644 "$FINAGENT_DIR/deploy/finagent-bot.service"    /etc/systemd/system/
+
+# Máy chủ cũng chạy một worker, không chỉ điều phối.
+#
+# Lý do: máy chủ vẫn còn nhân CPU rảnh, mà lúc cả ba máy con đều bận thì để máy chủ
+# ngồi không là lãng phí. Thêm nữa, cụm vẫn cào được dữ liệu kể cả khi mọi máy con
+# mất kết nối — máy chủ tự làm phần tối thiểu.
+#
+# Nhãn worker đặt là "finagent-server" để phân biệt với các máy con trong `finagent status`.
+install -m 644 "$FINAGENT_DIR/deploy/finagent-worker.service" /etc/systemd/system/
+sed -i "s|__WORKER_NAME__|finagent-server|g" /etc/systemd/system/finagent-worker.service
+
 sed -i "s|__FINAGENT_DIR__|$FINAGENT_DIR|g; s|__FINAGENT_USER__|$FINAGENT_USER|g" \
     /etc/systemd/system/finagent-server.service /etc/systemd/system/finagent-bot.service
+sed -i "s|__FINAGENT_DIR__|$FINAGENT_DIR|g; s|__FINAGENT_USER__|$FINAGENT_USER|g" \
+    /etc/systemd/system/finagent-worker.service
 
 chown -R "$FINAGENT_USER:$FINAGENT_USER" "$FINAGENT_DIR"
 systemctl daemon-reload
-systemctl enable finagent-server finagent-bot >/dev/null 2>&1
+systemctl enable finagent-server finagent-bot finagent-worker >/dev/null 2>&1
 
 log "8/8 — Cấu hình tường lửa"
 ufw --force reset >/dev/null 2>&1
@@ -138,8 +151,11 @@ cat <<EOF
          cd $FINAGENT_DIR && sudo -u $FINAGENT_USER .venv/bin/finagent init
 
   3) Bật dịch vụ:
-         sudo systemctl start finagent-server finagent-bot
+         sudo systemctl start finagent-server finagent-bot finagent-worker
          sudo systemctl status finagent-server
+
+       Máy chủ cũng chạy một worker (nhãn 'finagent-server') để tận dụng nhân CPU
+       rảnh, và để cụm vẫn cào được dữ liệu khi mọi máy con mất kết nối.
 
   4) Trên MỖI MÁY CON, trỏ về máy chủ này:
          REDIS_URL=redis://$IP_ADDR:6379/0
