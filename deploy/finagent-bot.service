@@ -1,0 +1,33 @@
+[Unit]
+Description=FinAgent - Bot Telegram (bao cao va duyet lenh)
+Documentation=file://__FINAGENT_DIR__/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__FINAGENT_USER__
+Group=__FINAGENT_USER__
+WorkingDirectory=__FINAGENT_DIR__
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=-__FINAGENT_DIR__/.env
+
+# Bot polling: nhan lenh /status /positions /pending /scan va nut Duyet/Tu choi.
+ExecStart=__FINAGENT_DIR__/.venv/bin/finagent bot
+
+# on-failure (không phải always): khi chưa cấu hình Telegram, bot thoát gọn với
+# mã 0 và dịch vụ dừng lại — thay vì khởi động lại vô hạn và làm ngập log.
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=finagent-bot
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=__FINAGENT_DIR__/data
+
+[Install]
+WantedBy=multi-user.target

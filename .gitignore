@@ -1,0 +1,64 @@
+# =============================================================================
+#  FinAgent — những thứ KHÔNG được đưa lên Git
+# =============================================================================
+
+# --- BÍ MẬT: tuyệt đối không được commit ------------------------------------
+# Chứa DEEPSEEK_API_KEY / GOOGLE_API_KEY / TELEGRAM_BOT_TOKEN. Lộ file này là
+# người khác điều khiển được bot và tiêu hết hạn mức API của bạn.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+service-account*.json
+
+# --- Môi trường Python -------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# --- Bộ nhớ đệm của Python ---------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# --- Dữ liệu chạy (sinh ra khi vận hành, không phải mã nguồn) ----------------
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+.vmtest/
+results/
+logs/
+*.log
+
+# --- Môi trường kiểm thử máy ảo ---------------------------------------------
+*.qcow2
+*.vmdk
+*.vmem
+*.vmsn
+*.vmsd
+*.nvram
+*.lck/
+*.scoreboard
+
+# --- Hệ điều hành và trình soạn thảo ----------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/

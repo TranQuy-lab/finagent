@@ -1,0 +1,224 @@
+"""Cấu hình trung tâm của hệ thống FinAgent.
+
+Toàn bộ tham số đọc từ biến môi trường (hoặc file .env) để máy chủ và máy con
+dùng chung một nguồn sự thật, không hard-code rải rác trong code.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Nạp .env ở thư mục gốc dự án (nếu có) trước khi đọc biến môi trường.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_ROOT / ".env")
+
+
+def _env_str(key: str, default: str) -> str:
+    value = os.getenv(key)
+    return value if value not in (None, "") else default
+
+
+def _env_int(key: str, default: int) -> int:
+    raw = os.getenv(key)
+    if raw in (None, ""):
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{key} phải là số nguyên, nhận được {raw!r}") from exc
+
+
+def _env_float(key: str, default: float) -> float:
+    raw = os.getenv(key)
+    if raw in (None, ""):
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{key} phải là số thực, nhận được {raw!r}") from exc
+
+
+def _env_list(key: str, default: list[str]) -> list[str]:
+    raw = os.getenv(key)
+    if raw in (None, ""):
+        return list(default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _resolve_llm_api_key() -> str:
+    """Tìm khoá API của nhà cung cấp LLM đang được chọn.
+
+    Đọc biến môi trường ứng với ``TRADINGAGENTS_LLM_PROVIDER``. Nếu biến của nhà
+    cung cấp đó trống, quét các biến khoá đã biết còn lại — người dùng thường chỉ
+    dán một khoá vào ``.env`` mà quên đổi tên nhà cung cấp, và trong trường hợp đó
+    chạy được vẫn hơn là báo lỗi khó hiểu.
+    """
+    provider = _env_str("TRADINGAGENTS_LLM_PROVIDER", "deepseek").lower()
+
+    if provider in KEYLESS_PROVIDERS:
+        return ""
+
+    direct = os.getenv(PROVIDER_KEY_ENV.get(provider, ""), "")
+    if direct:
+        return direct
+
+    # Dự phòng: nhà cung cấp đang chọn không có khoá, nhưng có khoá của nhà cung
+    # cấp khác thì dùng tạm để hệ thống vẫn chạy được.
+    for env_var in PROVIDER_KEY_ENV.values():
+        value = os.getenv(env_var, "")
+        if value:
+            return value
+    return ""
+
+
+#: Tài sản theo dõi mặc định: crypto + chứng khoán Việt Nam.
+DEFAULT_CRYPTO_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
+DEFAULT_VN_SYMBOLS = ["VNM", "FPT", "HPG", "VCB", "TCB"]
+
+#: Thương hiệu vàng theo dõi: SJC, DOJI, PNJ, Bảo Tín và vàng thế giới.
+DEFAULT_GOLD_SYMBOLS = ["SJL1L10", "DOJINHTV", "PQHNVM", "BT9999NTT", "XAUUSD"]
+
+#: Nhà cung cấp LLM → tên biến môi trường chứa khoá API.
+#: Giữ khớp với TradingAgents để không phải cấu hình khoá ở hai nơi.
+PROVIDER_KEY_ENV: dict[str, str] = {
+    "openai": "OPENAI_API_KEY",
+    "google": "GOOGLE_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "xai": "XAI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "kimi": "MOONSHOT_API_KEY",
+    "nvidia": "NVIDIA_API_KEY",
+    "qwen": "DASHSCOPE_API_KEY",
+    "qwen-cn": "DASHSCOPE_CN_API_KEY",
+    "glm": "ZHIPU_API_KEY",
+    "glm-cn": "ZHIPU_CN_API_KEY",
+    "minimax": "MINIMAX_API_KEY",
+    "minimax-cn": "MINIMAX_CN_API_KEY",
+}
+
+#: Nhà cung cấp chạy cục bộ, không cần khoá.
+KEYLESS_PROVIDERS = {"ollama"}
+
+
+@dataclass
+class Settings:
+    """Cấu hình của tiến trình.
+
+    Không đánh dấu ``frozen``: cho phép tinh chỉnh ngưỡng rủi ro lúc đang chạy
+    (ví dụ qua bot Telegram) và cho phép test ghi đè từng trường mà không phải
+    khởi động lại tiến trình.
+    """
+
+    # --- Hạ tầng phân tán -------------------------------------------------
+    redis_url: str = field(default_factory=lambda: _env_str("REDIS_URL", "redis://127.0.0.1:6379/0"))
+    #: Tổng số slot thu thập chạy song song trên TOÀN BỘ máy con.
+    max_concurrency: int = field(default_factory=lambda: _env_int("FINAGENT_MAX_CONCURRENCY", 10))
+    #: Số tiến trình con mỗi máy con tự chạy.
+    worker_concurrency: int = field(default_factory=lambda: _env_int("FINAGENT_WORKER_CONCURRENCY", 4))
+    #: Tên hàng đợi Celery mà máy con lắng nghe.
+    crawl_queue: str = field(default_factory=lambda: _env_str("FINAGENT_CRAWL_QUEUE", "crawl"))
+    #: Khoá Redis dùng làm semaphore giới hạn slot toàn cục.
+    slot_lock_key: str = field(default_factory=lambda: _env_str("FINAGENT_SLOT_KEY", "finagent:slots"))
+    #: Thời gian chờ tối đa (giây) để giành được một slot trước khi bỏ qua lượt.
+    slot_wait_seconds: int = field(default_factory=lambda: _env_int("FINAGENT_SLOT_WAIT", 30))
+    #: Slot tự hết hạn sau bao lâu nếu máy con chết giữa chừng (giây).
+    slot_ttl_seconds: int = field(default_factory=lambda: _env_int("FINAGENT_SLOT_TTL", 300))
+
+    # --- Mô hình ngôn ngữ --------------------------------------------------
+    #: Khoá API của nhà cung cấp đang chọn, đọc từ biến môi trường tương ứng
+    #: (``GOOGLE_API_KEY`` với google, ``DEEPSEEK_API_KEY`` với deepseek…).
+    #: Nhờ vậy đổi nhà cung cấp chỉ cần sửa ``TRADINGAGENTS_LLM_PROVIDER``.
+    llm_api_key: str = field(default_factory=lambda: _resolve_llm_api_key())
+    llm_provider: str = field(default_factory=lambda: _env_str("TRADINGAGENTS_LLM_PROVIDER", "deepseek"))
+    #: V4 Pro / Gemini Pro cho suy luận sâu (tranh luận, ra quyết định cuối).
+    deep_think_llm: str = field(default_factory=lambda: _env_str("TRADINGAGENTS_DEEP_THINK_LLM", "deepseek-v4-pro"))
+    #: V4 Flash / Gemini Flash cho việc nhẹ (phân tích nhanh), rẻ và nhanh hơn.
+    quick_think_llm: str = field(default_factory=lambda: _env_str("TRADINGAGENTS_QUICK_THINK_LLM", "deepseek-flash"))
+    output_language: str = field(default_factory=lambda: _env_str("TRADINGAGENTS_OUTPUT_LANGUAGE", "Vietnamese"))
+    #: Ghi đè địa chỉ endpoint LLM. Để trống thì dùng mặc định của nhà cung cấp.
+    #: Hữu ích khi trỏ vào endpoint tự lưu trữ (vLLM, LM Studio, Ollama) hoặc khi test.
+    llm_backend_url: str = field(default_factory=lambda: _env_str("TRADINGAGENTS_LLM_BACKEND_URL", ""))
+    max_debate_rounds: int = field(default_factory=lambda: _env_int("TRADINGAGENTS_MAX_DEBATE_ROUNDS", 1))
+    max_risk_rounds: int = field(default_factory=lambda: _env_int("TRADINGAGENTS_MAX_RISK_ROUNDS", 1))
+
+    # --- Telegram ----------------------------------------------------------
+    telegram_bot_token: str = field(default_factory=lambda: _env_str("TELEGRAM_BOT_TOKEN", ""))
+    telegram_chat_id: str = field(default_factory=lambda: _env_str("TELEGRAM_CHAT_ID", ""))
+    #: Địa chỉ API Telegram. Đổi được để dùng Bot API tự lưu trữ, hoặc để test.
+    telegram_api_base: str = field(
+        default_factory=lambda: _env_str("TELEGRAM_API_BASE", "https://api.telegram.org")
+    )
+    #: Thời gian (giây) chờ người dùng bấm duyệt trước khi đề xuất hết hạn.
+    approval_timeout: int = field(default_factory=lambda: _env_int("FINAGENT_APPROVAL_TIMEOUT", 900))
+
+    # --- Giao dịch ---------------------------------------------------------
+    #: "paper" = mô phỏng. Đổi sang "live" khi đã cắm adapter broker thật.
+    trading_mode: str = field(default_factory=lambda: _env_str("FINAGENT_TRADING_MODE", "paper"))
+    #: Số dư ban đầu của ví tiền đồng (dùng cho chứng khoán và vàng).
+    paper_starting_cash: float = field(default_factory=lambda: _env_float("FINAGENT_PAPER_CASH", 1_000_000_000.0))
+    #: Số dư ban đầu của ví USDT (dùng cho crypto, vì crypto niêm yết bằng USDT).
+    paper_starting_usdt: float = field(default_factory=lambda: _env_float("FINAGENT_PAPER_USDT", 5_000.0))
+    #: Tỷ giá quy đổi khi hiển thị tổng giá trị danh mục bằng VND.
+    usdt_vnd_rate: float = field(default_factory=lambda: _env_float("FINAGENT_USDT_VND", 26_300.0))
+    #: Chỉ đặt lệnh khi tín hiệu đạt mức này trở lên.
+    min_signal_confidence: float = field(default_factory=lambda: _env_float("FINAGENT_MIN_CONFIDENCE", 0.55))
+    #: Tỷ lệ vốn tối đa cho một lệnh.
+    max_position_pct: float = field(default_factory=lambda: _env_float("FINAGENT_MAX_POSITION_PCT", 0.10))
+    #: Lệnh vượt ngưỡng này (VND) bắt buộc người dùng duyệt qua Telegram.
+    require_approval_above: float = field(default_factory=lambda: _env_float("FINAGENT_APPROVAL_THRESHOLD", 5_000_000.0))
+
+    # --- Thu thập dữ liệu --------------------------------------------------
+    crypto_symbols: list[str] = field(default_factory=lambda: _env_list("FINAGENT_CRYPTO_SYMBOLS", DEFAULT_CRYPTO_SYMBOLS))
+    vn_symbols: list[str] = field(default_factory=lambda: _env_list("FINAGENT_VN_SYMBOLS", DEFAULT_VN_SYMBOLS))
+    gold_symbols: list[str] = field(default_factory=lambda: _env_list("FINAGENT_GOLD_SYMBOLS", DEFAULT_GOLD_SYMBOLS))
+    #: Chu kỳ quét thị trường (giây) của bộ giám sát.
+    monitor_interval: int = field(default_factory=lambda: _env_int("FINAGENT_MONITOR_INTERVAL", 300))
+    #: Chu kỳ thu thập tin tức (giây).
+    news_interval: int = field(default_factory=lambda: _env_int("FINAGENT_NEWS_INTERVAL", 900))
+    #: Chặn trên số bài viết lấy về mỗi nguồn mỗi lượt, tránh ngốn tài nguyên.
+    news_max_items: int = field(default_factory=lambda: _env_int("FINAGENT_NEWS_MAX_ITEMS", 40))
+
+    # --- Lưu trữ -----------------------------------------------------------
+    db_path: Path = field(default_factory=lambda: Path(_env_str("FINAGENT_DB", str(PROJECT_ROOT / "data" / "finagent.db"))))
+    log_level: str = field(default_factory=lambda: _env_str("FINAGENT_LOG_LEVEL", "INFO"))
+
+    @property
+    def telegram_enabled(self) -> bool:
+        return bool(self.telegram_bot_token and self.telegram_chat_id)
+
+    @property
+    def llm_enabled(self) -> bool:
+        """Có đủ điều kiện chạy suy luận LLM hay không."""
+        return bool(self.llm_api_key) or self.llm_provider in KEYLESS_PROVIDERS
+
+    @property
+    def llm_key_env_var(self) -> str:
+        """Tên biến môi trường chứa khoá của nhà cung cấp đang chọn."""
+        return PROVIDER_KEY_ENV.get(self.llm_provider.lower(), "")
+
+    def validate(self) -> list[str]:
+        """Trả về danh sách cảnh báo cấu hình (rỗng nghĩa là hợp lệ)."""
+        warnings: list[str] = []
+        if not self.llm_enabled:
+            env_var = self.llm_key_env_var or "khoá API"
+            warnings.append(
+                f"Thiếu {env_var} cho nhà cung cấp {self.llm_provider!r} — "
+                "phần suy luận LLM sẽ không chạy được."
+            )
+        if not self.telegram_enabled:
+            warnings.append("Thiếu TELEGRAM_BOT_TOKEN/CHAT_ID — thông báo Telegram sẽ bị tắt.")
+        if self.max_concurrency < 1:
+            warnings.append("FINAGENT_MAX_CONCURRENCY phải >= 1.")
+        if self.trading_mode not in ("paper", "live"):
+            warnings.append(f"FINAGENT_TRADING_MODE không hợp lệ: {self.trading_mode!r} (chỉ nhận 'paper' hoặc 'live').")
+        return warnings
+
+
+settings = Settings()

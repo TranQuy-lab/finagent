@@ -1,0 +1,32 @@
+[Unit]
+Description=FinAgent - May con thu thap du lieu
+Documentation=file://__FINAGENT_DIR__/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__FINAGENT_USER__
+Group=__FINAGENT_USER__
+WorkingDirectory=__FINAGENT_DIR__
+Environment="PYTHONUNBUFFERED=1"
+Environment="FINAGENT_WORKER_NAME=__WORKER_NAME__"
+EnvironmentFile=-__FINAGENT_DIR__/.env
+
+# May con chi lang nghe hang doi Redis va thu thap du lieu.
+ExecStart=__FINAGENT_DIR__/.venv/bin/finagent worker --name __WORKER_NAME__
+
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=finagent-worker
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=__FINAGENT_DIR__/data
+
+[Install]
+WantedBy=multi-user.target
